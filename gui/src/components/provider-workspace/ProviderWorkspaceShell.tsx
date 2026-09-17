@@ -140,6 +140,23 @@ export default function ProviderWorkspaceShell({
 }) {
   const t = useT();
   const [search, setSearch] = useState("");
+  const [railCollapsed, setRailCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("ocx_pws_rail_collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleRailCollapsed = useCallback(() => {
+    setRailCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem("ocx_pws_rail_collapsed", String(next));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>({ ready: true, needsSetup: true, disabled: true });
   const [pricingFilter, setPricingFilter] = useState<PricingFilter>({ free: true, paid: true });
   const [typeFilter, setTypeFilter] = useState<TypeFilter>({ cloud: true, local: true, selfHosted: true, login: true });
@@ -398,8 +415,21 @@ export default function ProviderWorkspaceShell({
 
   return (
     <div className="pws-shell-container">
-      <div className="pws-root">
-        <aside className="pws-rail" aria-label={t("pws.providerList")}>
+      <div className={`pws-root${railCollapsed ? " pws-root--rail-collapsed" : ""}`}>
+        <aside className={`pws-rail${railCollapsed ? " pws-rail--collapsed" : ""}`} aria-label={t("pws.providerList")}>
+        {railCollapsed ? (
+          <div className="pws-rail-collapsed-head">
+            <button
+              type="button"
+              className="pws-rail-toggle-btn pws-rail-toggle-btn--expand"
+              onClick={toggleRailCollapsed}
+              title={t("pws.rail.expand")}
+              aria-label={t("pws.rail.expand")}
+            >
+              ▶
+            </button>
+          </div>
+        ) : (
         <div className="pws-search-row">
           <div className="pws-search-wrap">
             <IconSearch className="pws-search-icon" width={14} height={14} aria-hidden="true" />
@@ -489,7 +519,17 @@ export default function ProviderWorkspaceShell({
               </div>
             )}
           </div>
+          <button
+            type="button"
+            className="pws-rail-toggle-btn pws-rail-toggle-btn--collapse"
+            onClick={toggleRailCollapsed}
+            title={t("pws.rail.collapse")}
+            aria-label={t("pws.rail.collapse")}
+          >
+            ◀
+          </button>
         </div>
+        )}
         <div
           className="pws-rail-list"
           role="listbox"
@@ -540,7 +580,7 @@ export default function ProviderWorkspaceShell({
                       onClick={() => onSelect(item.name)}
                       onFocus={() => setRailFocusName(item.name)}
                     />
-                    {onRemoveProvider && (
+                    {onRemoveProvider && !railCollapsed && (
                       <button
                         type="button"
                         className="pws-rail-row-remove"
@@ -646,3 +686,5 @@ function WorkspaceEmptyState({ onAddProvider }: { onAddProvider: (intent?: AddPr
     </div>
   );
 }
+
+

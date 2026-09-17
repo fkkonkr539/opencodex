@@ -173,6 +173,23 @@ export default function App() {
 
   // Narrow screens: the sidebar becomes an off-canvas drawer behind a hamburger toggle.
   const [navOpen, setNavOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("ocx_sidebar_collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebarCollapsed = useCallback(() => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem("ocx_sidebar_collapsed", String(next));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
   const navWasOpen = useRef(false);
@@ -339,7 +356,7 @@ export default function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app${sidebarCollapsed ? " app--sidebar-collapsed" : ""}`}>
       <DesktopStarOnboarding apiBase={sharedBase} enabled={targetsSettled && !targets.connected} />
       {actionFeedback && (
         <ToastNotice tone={actionFeedback.tone} onDismiss={() => setActionFeedback(null)} dismissLabel={t("common.close")}>
@@ -373,9 +390,18 @@ export default function App() {
         </div>
       </header>
       {navOpen && <div className="drawer-scrim" onClick={() => setNavOpen(false)} aria-hidden="true" />}
-      <aside id="app-sidebar" className={`sidebar${navOpen ? " open" : ""}`} ref={sidebarRef} tabIndex={-1}>
+      <aside id="app-sidebar" className={`sidebar${navOpen ? " open" : ""}${sidebarCollapsed ? " sidebar--collapsed" : ""}`} ref={sidebarRef} tabIndex={-1}>
         <div className="drawer-head">
           {brand}
+          <button
+            type="button"
+            className="sidebar-collapse-toggle-btn"
+            onClick={toggleSidebarCollapsed}
+            title={t(sidebarCollapsed ? "nav.expandSidebar" : "nav.collapseSidebar")}
+            aria-label={t(sidebarCollapsed ? "nav.expandSidebar" : "nav.collapseSidebar")}
+          >
+            {sidebarCollapsed ? "▶" : "◀"}
+          </button>
           <button type="button" className="menu-toggle drawer-close" onClick={() => setNavOpen(false)}
             aria-label={t("nav.closeMenu")} title={t("nav.closeMenu")}>
             <IconX />
@@ -405,8 +431,10 @@ export default function App() {
                     navigateToPage(id);
                     setNavOpen(false);
                   }}
+                  title={t(tkey)}
+                  aria-label={t(tkey)}
                   aria-current={active ? "page" : undefined}>
-                  <Icon /> {t(tkey)}
+                  <Icon /> <span className="nav-item-text">{t(tkey)}</span>
                 </button>
               </div>
             );
@@ -527,3 +555,4 @@ export default function App() {
     </div>
   );
 }
+
