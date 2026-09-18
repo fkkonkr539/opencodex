@@ -60,7 +60,9 @@ export default function AccountPoolStrategyControls({
   onStickyCommit,
 }: AccountPoolStrategyControlsProps) {
   const t = useT();
-  const strategyOptions = ACCOUNT_POOL_STRATEGIES.filter(value => codex || allowResetFirst || value !== "reset-first").map((value) => ({
+  const strategyOptions = ACCOUNT_POOL_STRATEGIES.filter(value => (
+    codex || allowResetFirst || value !== "reset-first" || strategy === value
+  )).map((value) => ({
     value,
     label: t(STRATEGY_LABEL_KEYS[value]),
   }));

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { IconX } from "../icons";
 import { useT } from "../i18n/shared";
 import { ProviderIcon } from "./provider-workspace/ProviderRail";
@@ -26,17 +26,14 @@ export default function AccountAuthChoiceModal({
   onImportSuccess,
 }: AccountAuthChoiceModalProps) {
   const t = useT();
+  const dialog = useRef<HTMLDivElement>(null);
+  const primary = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!isOpen) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+    const previous = document.activeElement as HTMLElement | null;
+    primary.current?.focus();
+    return () => { if (previous?.isConnected && typeof previous.focus === "function") previous.focus(); };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -47,8 +44,16 @@ export default function AccountAuthChoiceModal({
       aria-labelledby="auth-choice-modal-title"
       className="modal-overlay"
       onClick={onClose}
+      onKeyDown={event => {
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
+        if (event.key !== "Tab") return;
+        const buttons = dialog.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
+        const first = buttons?.[0], last = buttons?.[buttons.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }}
     >
-      <div className="modal-card auth-choice-modal" onClick={e => e.stopPropagation()}>
+      <div className="modal-card auth-choice-modal" ref={dialog} onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <div>
             <h3 id="auth-choice-modal-title">
@@ -81,6 +86,7 @@ export default function AccountAuthChoiceModal({
             <button
               type="button"
               className="btn btn-primary btn-sm"
+              ref={primary}
               disabled={isBusy}
               onClick={() => {
                 onClose();
@@ -101,4 +107,3 @@ export default function AccountAuthChoiceModal({
     </div>
   );
 }
-

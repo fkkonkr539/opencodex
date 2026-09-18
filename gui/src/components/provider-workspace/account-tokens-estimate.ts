@@ -482,28 +482,35 @@ export function usePoolTokensEstimate({
 
   useEffect(() => {
     let unmounted = false;
+    const controller = new AbortController();
     const loadLogs = async () => {
+      // A hidden tab needs no fresh estimate; the next visible load refreshes.
+      if (typeof document !== "undefined" && document.hidden) return;
       try {
         const url = apiBase + "/api/logs?limit=1000";
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         if (!res.ok) return;
         const data = await res.json() as { logs?: MinimalLogEntry[] };
         if (!unmounted && Array.isArray(data.logs)) {
           setLogs(data.logs);
           setLastFetchedAt(Date.now());
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
         // Soft fallback to baseline
       }
     };
 
-    void loadLogs();
+    // Load on mount and when a quota refresh completes. While a refresh is in
+    // flight its completion re-runs this effect, so starting needs no load.
+    if (!refreshingAll) void loadLogs();
     const timer = window.setInterval(() => {
       void loadLogs();
     }, 45_000);
 
     return () => {
       unmounted = true;
+      controller.abort();
       window.clearInterval(timer);
     };
   }, [apiBase, refreshingAll]);

@@ -18,6 +18,7 @@ import { LoginHint as LoginHintView } from "../login-url-block";
 import { OpenBrowserPrefToggle } from "../open-browser-pref-toggle";
 import { getPoolSettings, putPoolSettings } from "../../pool-settings";
 import { normalizeAccountPoolStrategy, type AccountPoolStrategy } from "../../account-pool-strategy";
+import { DEFAULT_ACCOUNT_POOL_STRATEGY } from "../../account-pool-strategy";
 import ProviderAccountQuota from "./ProviderAccountQuota";
 import { GrokResetCouponModal } from "./GrokResetCoupons";
 import { AnthropicResetGrantModal } from "./AnthropicResetGrants";
@@ -244,7 +245,13 @@ export default function ProviderAuthPanel({
 
   const [genericPool, setGenericPool] = useState<{ enabled: boolean; strategy: AccountPoolStrategy } | null>(null);
 
+  const [poolSaveError, setPoolSaveError] = useState<string | null>(null);
+
   useEffect(() => {
+    // The panel is not remounted per provider: without this, a failed read (or an
+    // empty roster) leaves the previous provider's strategy on screen, and the
+    // toggle would persist it under the new provider.
+    setGenericPool(null);
     if (!isOauth || item.name === "openai" || item.name === "anthropic") return;
     let cancelled = false;
     void getPoolSettings(apiBase, item.name).then(res => {
@@ -259,20 +266,44 @@ export default function ProviderAuthPanel({
 
   const handleTogglePoolEnabled = useCallback(() => {
     if (!genericPool) return;
-    const nextEnabled = !genericPool.enabled;
-    setGenericPool(prev => prev ? { ...prev, enabled: nextEnabled } : null);
+    const prev = genericPool;
+    const nextEnabled = !prev.enabled;
+    setGenericPool({ ...prev, enabled: nextEnabled });
+    setPoolSaveError(null);
     void putPoolSettings(apiBase, item.name, {
       enabled: nextEnabled,
-      strategy: genericPool.strategy,
+      strategy: prev.strategy,
+    }).then(saved => {
+      if (!saved) {
+        setGenericPool(prev);
+        setPoolSaveError(t("prov.updateFail"));
+        return;
+      }
+      setGenericPool({
+        enabled: saved.enabled === true || saved.enabledEffective === true,
+        strategy: normalizeAccountPoolStrategy(saved.strategy),
+      });
     });
   }, [apiBase, genericPool, item.name]);
 
   const handleSelectPoolStrategy = useCallback((nextStrategy: AccountPoolStrategy) => {
     if (!genericPool) return;
-    setGenericPool(prev => prev ? { ...prev, strategy: nextStrategy } : null);
+    const prev = genericPool;
+    setGenericPool({ ...prev, strategy: nextStrategy });
+    setPoolSaveError(null);
     void putPoolSettings(apiBase, item.name, {
-      enabled: genericPool.enabled,
+      enabled: prev.enabled,
       strategy: nextStrategy,
+    }).then(saved => {
+      if (!saved) {
+        setGenericPool(prev);
+        setPoolSaveError(t("prov.updateFail"));
+        return;
+      }
+      setGenericPool({
+        enabled: saved.enabled === true || saved.enabledEffective === true,
+        strategy: normalizeAccountPoolStrategy(saved.strategy),
+      });
     });
   }, [apiBase, genericPool, item.name]);
 
@@ -523,12 +554,17 @@ export default function ProviderAuthPanel({
                   onRefreshAll={canRefreshQuota ? () => { void refreshQuota(); } : undefined}
                   quotaRefreshResultText={quotaRefreshResult?.text}
                   quotaRefreshResultOk={quotaRefreshResult?.ok}
-                  poolSupported={isOauth && item.name !== "openai" && item.name !== "anthropic"}
-                  poolEnabled={genericPool?.enabled ?? true}
+                  poolSupported={genericPool !== null}
+                  poolEnabled={genericPool?.enabled ?? false}
                   onTogglePoolEnabled={handleTogglePoolEnabled}
-                  poolStrategy={genericPool?.strategy ?? "reset-first"}
+                  poolStrategy={genericPool?.strategy ?? DEFAULT_ACCOUNT_POOL_STRATEGY}
                   onSelectPoolStrategy={handleSelectPoolStrategy}
                 />
+                {poolSaveError && (
+                  <div className="pwi-auth-state pwi-auth-state--error" role="alert">
+                    <span>{poolSaveError}</span>
+                  </div>
+                )}
 
                 {filteredAndSortedAccounts.length > 0 ? (
                   <div className={accountViewMode === "compact" ? "compact-dense-grid" : "pwi-accounts-grid-2col"}>

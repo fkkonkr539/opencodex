@@ -408,7 +408,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
       if (prev !== undefined && prev !== null && curr && prev !== curr) {
         const switchedTo = set.accounts.find(a => a.id === curr);
         const name = switchedTo?.alias?.trim() || switchedTo?.email || curr.slice(-6);
-        notify(`⚡ ${t("genericPool.title")}: ${t("pws.switchedToAccount", { account: name })}`, true);
+        notify(t("pws.accountSwitchNotice", { account: name }), true);
       }
       previousActiveAccountsRef.current[provider] = curr;
     }

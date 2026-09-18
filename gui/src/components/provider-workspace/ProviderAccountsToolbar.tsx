@@ -8,6 +8,7 @@ import { useState, useRef, useEffect } from "react";
 import { useT } from "../../i18n/shared";
 import { IconRefresh, IconSearch, IconX } from "../../icons";
 import type { AccountPoolStrategy } from "../../account-pool-strategy";
+import { DEFAULT_ACCOUNT_POOL_STRATEGY } from "../../account-pool-strategy";
 import type {
   AccountDisplayKey,
   AccountFilterKey,
@@ -42,8 +43,6 @@ export interface ProviderAccountsToolbarProps {
   onSelectPoolStrategy?: (strategy: AccountPoolStrategy) => void;
 }
 
-export type StatsDisplayStyle = "hybrid" | "split";
-
 export default function ProviderAccountsToolbar({
   apiBase = "",
   providerName = "google-antigravity",
@@ -66,27 +65,10 @@ export default function ProviderAccountsToolbar({
   poolSupported = false,
   poolEnabled = false,
   onTogglePoolEnabled,
-  poolStrategy = "reset-first",
+  poolStrategy = DEFAULT_ACCOUNT_POOL_STRATEGY,
   onSelectPoolStrategy,
 }: ProviderAccountsToolbarProps) {
   const t = useT();
-  const [statsStyle, setStatsStyle] = useState<StatsDisplayStyle>(() => {
-    try {
-      const saved = localStorage.getItem("ocx_pws_stats_style");
-      return saved === "split" ? "split" : "hybrid";
-    } catch {
-      return "hybrid";
-    }
-  });
-
-  const handleStatsStyleChange = (style: StatsDisplayStyle) => {
-    setStatsStyle(style);
-    try {
-      localStorage.setItem("ocx_pws_stats_style", style);
-    } catch {
-      // best-effort
-    }
-  };
 
   const tokensEstimate = usePoolTokensEstimate({
     apiBase,
@@ -195,7 +177,7 @@ export default function ProviderAccountsToolbar({
   let activeFilterLabel: string;
   let activeFilterIcon: string;
   let activeFilterCount: number;
-  
+
   switch (filter) {
     case "with_limits_gemini":
       activeFilterLabel = t("pws.filterWithLimitsGemini");
@@ -543,7 +525,7 @@ export default function ProviderAccountsToolbar({
                   >
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "with_limits" ? " active" : ""}`}
                       onClick={() => { onFilterChange("with_limits"); setLimitsMenuOpen(false); }}
                       style={{
@@ -562,7 +544,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "all" ? " active" : ""}`}
                       onClick={() => { onFilterChange("all"); setLimitsMenuOpen(false); }}
                       style={{
@@ -585,7 +567,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "with_limits_gemini" ? " active" : ""}`}
                       onClick={() => { onFilterChange("with_limits_gemini"); setLimitsMenuOpen(false); }}
                       style={{
@@ -604,7 +586,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "with_limits_claude" ? " active" : ""}`}
                       onClick={() => { onFilterChange("with_limits_claude"); setLimitsMenuOpen(false); }}
                       style={{
@@ -625,7 +607,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "gemini_exhausted" ? " active" : ""}`}
                       onClick={() => { onFilterChange("gemini_exhausted"); setLimitsMenuOpen(false); }}
                       style={{
@@ -644,7 +626,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "claude_exhausted" ? " active" : ""}`}
                       onClick={() => { onFilterChange("claude_exhausted"); setLimitsMenuOpen(false); }}
                       style={{
@@ -668,7 +650,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${filter === "fully_exhausted" ? " active" : ""}`}
                       onClick={() => { onFilterChange("fully_exhausted"); setLimitsMenuOpen(false); }}
                       style={{
@@ -711,7 +693,7 @@ export default function ProviderAccountsToolbar({
                   <div className="pwi-filter-dropdown-menu" >
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${sortKey === "more_headroom" ? " active" : ""}`}
                       onClick={() => { onSortChange("more_headroom"); setSortMenuOpen(false); }}
                     >
@@ -723,7 +705,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${sortKey === "less_headroom" ? " active" : ""}`}
                       onClick={() => { onSortChange("less_headroom"); setSortMenuOpen(false); }}
                     >
@@ -735,10 +717,11 @@ export default function ProviderAccountsToolbar({
 
                     <div className="pwi-dropdown-divider" />
 
-                    {analyzedList.some(a => Boolean(a.generic5h || a.gemini5h || a.claude5h)) && (
+                    {(sortKey === "reset_5h_soonest"
+                      || analyzedList.some(a => Boolean(a.generic5h || a.gemini5h || a.claude5h))) && (
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${sortKey === "reset_5h_soonest" ? " active" : ""}`}
                       onClick={() => { onSortChange("reset_5h_soonest"); setSortMenuOpen(false); }}
                     >
@@ -751,7 +734,7 @@ export default function ProviderAccountsToolbar({
 
                     <button
                       type="button"
-                      
+
                       className={`pwi-dropdown-item${sortKey === "reset_7d_soonest" ? " active" : ""}`}
                       onClick={() => { onSortChange("reset_7d_soonest"); setSortMenuOpen(false); }}
                     >
@@ -932,28 +915,6 @@ export default function ProviderAccountsToolbar({
             </div>
           </div>
 
-          {/* Stats Mode: Option A (Hybrid) vs Option B (Split) */}
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <span className="pwi-filter-caption" style={{ fontSize: "11.5px", fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.5px", whiteSpace: "nowrap" }}>{t("pws.statsStyleLabel")}:</span>
-            <div className="pwi-segmented">
-              <button
-                type="button"
-                className={`pwi-seg-opt${statsStyle === "hybrid" ? " active" : ""}`}
-                onClick={() => handleStatsStyleChange("hybrid")}
-                title={t("pws.statsStyleHybrid")}
-              >
-                ⚡ {t("pws.statsStyleHybrid")}
-              </button>
-              <button
-                type="button"
-                className={`pwi-seg-opt${statsStyle === "split" ? " active" : ""}`}
-                onClick={() => handleStatsStyleChange("split")}
-                title={t("pws.statsStyleSplit")}
-              >
-                ⊞ {t("pws.statsStyleSplit")}
-              </button>
-            </div>
-          </div>
         </div>
       </div>
     </div>

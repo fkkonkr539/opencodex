@@ -53,6 +53,11 @@ const ZH_TW_KEEP_ENGLISH: ReadonlySet<string> = new Set([
   // Provider proper nouns (Taiwan keeps the English brand; "火山方舟" is Mainland usage)
   "provider.name.volcengine",
   "pws.cockpitCardTitle",
+  // Antigravity product and plan-tier names are used verbatim in Taiwan PR copy.
+  "pws.providerLabelAntigravity",
+  "pws.plan.ultra",
+  "pws.plan.pro",
+  "pws.plan.enterprise",
   "pws.tokensColClaude",
   "pws.tokensColGemini",
   "pws.tokensLabel5h",

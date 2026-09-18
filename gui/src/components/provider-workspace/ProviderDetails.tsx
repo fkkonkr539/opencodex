@@ -153,17 +153,21 @@ export default function ProviderDetails({
     { id: "settings", label: t("pws.tab.settings") },
   ], [authSurface, t]);
 
-  const switchTab = useCallback((next: Tab) => {
-    if (settingsDirty && tab === "settings" && next !== "settings") {
-      setPendingLeave(next);
-      return;
-    }
+  const commitTab = useCallback((next: Tab) => {
     setTab(next);
     try {
       localStorage.setItem("ocx_provider_tab_" + item.name, next);
       localStorage.setItem("ocx_provider_active_tab", next);
     } catch { /* ignore */ }
-  }, [tab, settingsDirty, item.name, setPendingLeave, setTab]);
+  }, [item.name, setTab]);
+
+  const switchTab = useCallback((next: Tab) => {
+    if (settingsDirty && tab === "settings" && next !== "settings") {
+      setPendingLeave(next);
+      return;
+    }
+    commitTab(next);
+  }, [tab, settingsDirty, commitTab, setPendingLeave]);
 
   // Adjust related state when accountsFocusToken changes during render (not in an
   // effect) so the Accounts tab is selected without a one-frame stale paint.
@@ -384,7 +388,7 @@ export default function ProviderDetails({
             setPendingLeave(null);
             setSettingsDirty(false);
             if (next === "deselect") onDeselect();
-            else switchTab(next);
+            else commitTab(next);
           }}
           onSave={() => {
             void (async () => {
@@ -397,7 +401,7 @@ export default function ProviderDetails({
                 setPendingLeave(null);
                 setSettingsDirty(false);
                 if (next === "deselect") onDeselect();
-                else if (next) switchTab(next);
+                else if (next) commitTab(next);
               } finally {
                 setLeaveSaving(false);
               }

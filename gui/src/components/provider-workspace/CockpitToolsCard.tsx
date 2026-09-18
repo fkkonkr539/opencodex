@@ -92,13 +92,10 @@ export default function CockpitToolsCard({
       try {
         document = JSON.parse(text) as unknown;
       } catch {
-        try {
-          const sanitized = text.replace(/,\s*([}\]])/g, "$1");
-          document = JSON.parse(sanitized) as unknown;
-        } catch {
-          setImportStatus("invalid");
-          return;
-        }
+        // No lenient fallback: a context-free trailing-comma strip also rewrites
+        // text inside JSON strings and can submit corrupted account data.
+        setImportStatus("invalid");
+        return;
       }
       if (isPlainObject(document)) {
         document = [document];

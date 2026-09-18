@@ -1259,6 +1259,19 @@
   font-weight: 600;
 }
 
+.pwi-account-plan-badge.pwi-plan--enterprise {
+  background: color-mix(in srgb, var(--green, #4ecb9d) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green, #4ecb9d) 35%, transparent);
+  color: #6ee7b7;
+}
+
+.pwi-account-plan-badge.pwi-plan--other {
+  background: var(--surface, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .pwi-quota-item {
   display: flex;
   flex-direction: column;

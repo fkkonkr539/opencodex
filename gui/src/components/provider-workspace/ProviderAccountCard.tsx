@@ -67,14 +67,18 @@ export default function ProviderAccountCard({
   const claudeHasData = claude5hPercent !== undefined || claudeWeeklyPercent !== undefined;
 
   const plan = account.plan;
-  const planBadge = plan ? (
-    <span
-      className={`pwi-account-plan-badge ${
-        plan.includes("Ultra") ? "pwi-plan--ultra" : plan.includes("Pro") ? "pwi-plan--pro" : "pwi-plan--starter"
-      }`}
-      title={plan}
-    >
-      {plan.includes("Ultra") ? "👑 AI Ultra" : plan.includes("Pro") ? "⭐ AI Pro" : plan.includes("Enterprise") ? "🏢 Enterprise" : "Starter"}
+  const planTier = !plan
+    ? null
+    : plan.includes("Ultra") ? "ultra"
+      : plan.includes("Pro") ? "pro"
+        : plan.includes("Enterprise") ? "enterprise"
+          : "other";
+  const planBadge = plan && planTier ? (
+    <span className={`pwi-account-plan-badge pwi-plan--${planTier}`} title={plan}>
+      {planTier === "ultra" ? `👑 ${t("pws.plan.ultra")}`
+        : planTier === "pro" ? `⭐ ${t("pws.plan.pro")}`
+          : planTier === "enterprise" ? `🏢 ${t("pws.plan.enterprise")}`
+            : plan}
     </span>
   ) : null;
 
@@ -443,7 +447,7 @@ export default function ProviderAccountCard({
 
         {!isAntigravity && !showReauth && (
           <div className="pwi-quota-col" style={{ gridColumn: "span 2" }}>
-            {renderSingleQuotaBar("5-Hour", analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
+            {renderSingleQuotaBar(t("pws.window5hLabel"), analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
             {renderSingleQuotaBar(t("pws.windowWeeklyLabel"), analyzed.genericWeekly?.percent, analyzed.genericWeekly?.resetAt)}
           </div>
         )}
