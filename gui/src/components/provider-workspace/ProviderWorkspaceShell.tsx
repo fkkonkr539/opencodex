@@ -148,14 +148,14 @@ export default function ProviderWorkspaceShell({
     }
   });
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("ocx_pws_rail_collapsed", String(railCollapsed));
+    } catch { /* ignore */ }
+  }, [railCollapsed]);
+
   const toggleRailCollapsed = useCallback(() => {
-    setRailCollapsed(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem("ocx_pws_rail_collapsed", String(next));
-      } catch { /* ignore */ }
-      return next;
-    });
+    setRailCollapsed(prev => !prev);
   }, []);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>({ ready: true, needsSetup: true, disabled: true });
   const [pricingFilter, setPricingFilter] = useState<PricingFilter>({ free: true, paid: true });

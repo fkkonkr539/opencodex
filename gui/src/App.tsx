@@ -181,14 +181,14 @@ export default function App() {
     }
   });
 
+  useEffect(() => {
+    try {
+      localStorage.setItem("ocx_sidebar_collapsed", String(sidebarCollapsed));
+    } catch { /* ignore */ }
+  }, [sidebarCollapsed]);
+
   const toggleSidebarCollapsed = useCallback(() => {
-    setSidebarCollapsed(prev => {
-      const next = !prev;
-      try {
-        localStorage.setItem("ocx_sidebar_collapsed", String(next));
-      } catch { /* ignore */ }
-      return next;
-    });
+    setSidebarCollapsed(prev => !prev);
   }, []);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);

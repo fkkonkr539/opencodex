@@ -4,8 +4,6 @@ import { act } from "react";
 import type { Root } from "react-dom/client";
 import { LanguageProvider } from "../src/i18n/provider";
 import CockpitToolsCard from "../src/components/provider-workspace/CockpitToolsCard";
-import type { WorkspaceItem } from "../src/provider-workspace/catalog";
-import type { ProviderAuthHandlers } from "../src/components/provider-workspace/types";
 
 const CANARY = "canary-cockpit-refresh-token-do-not-render";
 const globals = ["document", "window", "navigator", "localStorage", "IS_REACT_ACT_ENVIRONMENT", "fetch"] as const;
@@ -15,21 +13,6 @@ let host: HTMLElement;
 let root: Root | null = null;
 let fetchMock: ReturnType<typeof mock>;
 let retryAccounts: ReturnType<typeof mock>;
-
-const ITEM: WorkspaceItem = {
-  name: "google-antigravity",
-  adapter: "google",
-  baseUrl: "https://daily-cloudcode-pa.googleapis.com",
-  authMode: "oauth",
-};
-
-function handlers(): ProviderAuthHandlers {
-  return {
-    onLogin: () => {}, onLogout: () => {}, onReauth: () => {}, onSwitchAccount: () => {}, onRemoveAccount: () => {},
-    onAddApiKey: async () => true, onSwitchApiKey: () => {}, onRemoveApiKey: () => {}, onEditAlias: () => {},
-    onRetryAccounts: retryAccounts,
-  };
-}
 
 beforeEach(() => {
   previous = Object.fromEntries(globals.map(key => [key, Reflect.get(globalThis, key)])) as typeof previous;
