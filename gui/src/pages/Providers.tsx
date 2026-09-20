@@ -400,19 +400,6 @@ export default function Providers({ apiBase }: { apiBase: string }) {
     return refreshAccountRosters(target);
   }, [refreshAccountRosters, oauthCardProviders, keyCardProviders]);
   const recoverSelectionStream = useAccountSelectionEvents(apiBase, config !== null, refreshSelection);
-  const previousActiveAccountsRef = useRef<Record<string, string | null>>({});
-  useEffect(() => {
-    for (const [provider, set] of Object.entries(accountSets)) {
-      const prev = previousActiveAccountsRef.current[provider];
-      const curr = set.activeAccountId;
-      if (prev !== undefined && prev !== null && curr && prev !== curr) {
-        const switchedTo = set.accounts.find(a => a.id === curr);
-        const name = switchedTo?.alias?.trim() || switchedTo?.email || curr.slice(-6);
-        notify(t("pws.accountSwitchNotice", { account: name }), true);
-      }
-      previousActiveAccountsRef.current[provider] = curr;
-    }
-  }, [accountSets, notify, t]);
 
   const rosterKey = JSON.stringify([apiBase, oauthCardProviders.toSorted(), keyCardProviders.toSorted()]);
   const rosterRecoveryKeyRef = useRef<string | null>(null);

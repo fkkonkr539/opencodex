@@ -425,7 +425,7 @@ export default function ProviderAuthPanel({
       */}
       <div className="pwi-auth-head">
         <h3 className="pwi-section-title">{isOauth ? t("pws.availableAccounts") : t("pws.apiKeys")}</h3>
-        {(isKeyAuth || (isOauth && accounts.length === 0 && loggedIn)) && canRefreshQuota && (
+        {((isOauth && loggedIn) || isKeyAuth) && canRefreshQuota && (
           <div className="pwi-auth-head-actions">
             {quotaRefreshResult && (
               <span role="status" className={quotaRefreshResult.ok ? "pws-status-ok" : "pws-status-warn"}>
@@ -585,6 +585,8 @@ export default function ProviderAuthPanel({
                         onEditAlias={acc => void authHandlers.onEditAlias(item.name, "oauth", acc.id, acc.alias)}
                         onRemove={acc => setAccountToRemove(acc)}
                         onReauth={acc => void authHandlers.onReauth(item.name, acc.id)}
+                        grokCouponEntry={grokCouponsEnabled ? grokCoupons.entries[analyzed.account.id] : undefined}
+                        onGrokCouponClick={grokCouponsEnabled ? acc => setCouponAccount(acc) : undefined}
                       />
                     ))}
                   </div>

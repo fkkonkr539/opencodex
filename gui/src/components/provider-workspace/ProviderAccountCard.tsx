@@ -15,6 +15,9 @@ import type {
 } from "./account-quota-analysis";
 import type { OAuthAccountRow } from "./types";
 import { displayAccountId } from "../../lib/privacy";
+import { GrokCouponBadge } from "./GrokResetCoupons";
+import type { GrokCouponEntry } from "../../hooks/useGrokResetCoupons";
+import ProviderAccountQuota from "./ProviderAccountQuota";
 
 export interface ProviderAccountCardProps {
   analyzed: AnalyzedAccountQuota;
@@ -28,6 +31,8 @@ export interface ProviderAccountCardProps {
   onEditAlias: (account: OAuthAccountRow) => void;
   onRemove: (account: OAuthAccountRow) => void;
   onReauth?: (account: OAuthAccountRow) => void;
+  grokCouponEntry?: GrokCouponEntry | undefined;
+  onGrokCouponClick?: (account: OAuthAccountRow) => void;
 }
 
 export default function ProviderAccountCard({
@@ -42,6 +47,8 @@ export default function ProviderAccountCard({
   onEditAlias,
   onRemove,
   onReauth,
+  grokCouponEntry,
+  onGrokCouponClick,
 }: ProviderAccountCardProps) {
   const t = useT();
   const { locale } = useI18n();
@@ -177,7 +184,7 @@ export default function ProviderAccountCard({
 
   if (viewMode === "compact") {
     return (
-      <div className={`pwi-card-dense${active ? " pwi-card-dense--active" : ""}`}>
+      <div className={`pwi-card-dense${active ? " pwi-card-dense--active pwi-auth-acct--active" : ""}`}>
         <div className="pwi-dense-top">
           <div className="pwi-dense-id-group">
             <button
@@ -209,6 +216,9 @@ export default function ProviderAccountCard({
               <button type="button" className="btn btn-primary btn-xs" onClick={() => onReauth(account)}>
                 {t("pws.reauthenticate")}
               </button>
+            )}
+            {!showReauth && onGrokCouponClick && (
+              <GrokCouponBadge entry={grokCouponEntry} t={t} onClick={() => onGrokCouponClick(account)} />
             )}
             {onRefreshSingle && (
               <button
@@ -319,8 +329,15 @@ export default function ProviderAccountCard({
           {/* Generic fallback */}
           {!analyzed.gemini5h && !analyzed.geminiWeekly && !analyzed.claude5h && !analyzed.claudeWeekly && (
             <div className="pwi-dense-col" style={{ gridColumn: "span 2" }}>
-              {renderSingleQuotaBar(t("pws.window5hLabel"), analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
-              {renderSingleQuotaBar(t("pws.windowWeeklyLabel"), analyzed.genericWeekly?.percent, analyzed.genericWeekly?.resetAt)}
+              {(analyzed.generic5h || analyzed.genericWeekly) ? (
+                <>
+                  {renderSingleQuotaBar(t("pws.window5hLabel"), analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
+                  {renderSingleQuotaBar(t("pws.windowWeeklyLabel"), analyzed.genericWeekly?.percent, analyzed.genericWeekly?.resetAt)}
+                </>
+              ) : (
+                <ProviderAccountQuota quotaMode={account.quotaMode} quota={account.quota}
+                  quotaUnavailable={account.quotaUnavailable} quotaPending={account.quotaPending} quotaFailure={account.quotaFailure} />
+              )}
             </div>
           )}
         </div>
@@ -330,7 +347,7 @@ export default function ProviderAccountCard({
 
   // Cards view
   return (
-    <div className={`pwi-account-card${active ? " pwi-account-card--active" : ""}${analyzed.fullyExhausted ? " pwi-account-card--exhausted" : ""}`}>
+    <div className={`pwi-account-card${active ? " pwi-account-card--active pwi-auth-acct--active" : ""}${analyzed.fullyExhausted ? " pwi-account-card--exhausted" : ""}`}>
       <div className="pwi-card-header">
         <div className="pwi-card-id-row">
           <button
@@ -367,6 +384,9 @@ export default function ProviderAccountCard({
             <button type="button" className="btn btn-primary btn-sm" onClick={() => onReauth(account)}>
               {t("pws.reauthenticate")}
             </button>
+          )}
+          {!showReauth && onGrokCouponClick && (
+            <GrokCouponBadge entry={grokCouponEntry} t={t} onClick={() => onGrokCouponClick(account)} />
           )}
           {onRefreshSingle && (
             <button
@@ -447,8 +467,15 @@ export default function ProviderAccountCard({
 
         {!isAntigravity && !showReauth && (
           <div className="pwi-quota-col" style={{ gridColumn: "span 2" }}>
-            {renderSingleQuotaBar(t("pws.window5hLabel"), analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
-            {renderSingleQuotaBar(t("pws.windowWeeklyLabel"), analyzed.genericWeekly?.percent, analyzed.genericWeekly?.resetAt)}
+            {(analyzed.generic5h || analyzed.genericWeekly) ? (
+              <>
+                {renderSingleQuotaBar(t("pws.window5hLabel"), analyzed.generic5h?.percent, analyzed.generic5h?.resetAt)}
+                {renderSingleQuotaBar(t("pws.windowWeeklyLabel"), analyzed.genericWeekly?.percent, analyzed.genericWeekly?.resetAt)}
+              </>
+            ) : (
+              <ProviderAccountQuota quotaMode={account.quotaMode} quota={account.quota}
+                quotaUnavailable={account.quotaUnavailable} quotaPending={account.quotaPending} quotaFailure={account.quotaFailure} />
+            )}
           </div>
         )}
       </div>

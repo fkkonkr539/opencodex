@@ -210,6 +210,33 @@ const INTENTIONAL_ENGLISH = new Set<TKey>([
   // untranslated `~$`); the templates are pure placeholders on purpose.
   "logs.cost.approximate",
   "logs.cost.lowerBound",
+  // Provider-workspace redesign: model names ("Gemini", "Claude"), the "Cockpit Tools
+  // Antigravity" card title, and ordinary French words whose correct spelling is
+  // identical to English ("Total", "Alias", "Compact"). The exhausted badges pair a
+  // model name with a bare percentage, so there is no prose to translate.
+  "pws.cockpitCardTitle",
+  "pws.statsTotal",
+  "pws.geminiExhaustedShort",
+  "pws.claudeExhaustedShort",
+  "pws.modelGemini",
+  "pws.modelClaude",
+  "pws.titleAlias",
+  "pws.aliasShort",
+  "pws.viewCompact",
+  "prov.editAliasShort",
+  // Pool follow-up: product and provider names ("Google Antigravity", "AI Ultra",
+  // "AI Pro", "Enterprise"), model-name column headers, and bare units ("5h").
+  // The suffixed token headers pair those with a unit in parentheses.
+  "pws.providerLabelAntigravity",
+  "pws.plan.ultra",
+  "pws.plan.pro",
+  "pws.plan.enterprise",
+  "pws.tokensColClaude",
+  "pws.tokensColGemini",
+  "pws.tokensLabel5h",
+  "pws.tokensClaude5h",
+  "pws.tokensGemini5h",
+  "pws.tokensTotal5h",
 ]);
 
 function placeholders(value: string): string[] {
