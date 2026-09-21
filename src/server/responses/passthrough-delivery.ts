@@ -138,13 +138,10 @@ import { restoreRoutedToolSearchCallsInJson } from "../../responses/tool-search-
 import { responsesJsonToSseStream } from "../responses-json-events";
 import { decodeServerSentEvents } from "../../lib/sse-decoder";
 
-function requestBodyForcesResponsesStream(bodyText: string): boolean {
-  try {
-    const body = JSON.parse(bodyText) as { stream?: unknown };
-    return body?.stream === true;
-  } catch {
-    return false;
-  }
+function outboundRequestForcesResponsesStream(
+  body: Record<string, unknown> | undefined,
+): boolean {
+  return body?.stream === true;
 }
 
 async function collectForcedResponsesStream(
@@ -471,7 +468,7 @@ export async function deliverPassthroughResponse(
       clientRequestedStream === false
       && isEventStream
       && upstreamResponse.ok
-      && requestBodyForcesResponsesStream(nativeExchange.request.body)
+      && outboundRequestForcesResponsesStream(nativeExchange.outboundRequestBody)
     ) {
       try {
         upstreamResponse = await collectForcedResponsesStream(

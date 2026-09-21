@@ -16,16 +16,19 @@ import { removeTreeWithRetry } from "../helpers/remove-tree";
 import { acquireOwnedSpendHome } from "../helpers/owned-spend-home";
 
 const previousHome = process.env.OPENCODEX_HOME;
+const originalFetch = globalThis.fetch;
 let home = "";
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "opencodex-mirasim-endpoints-"));
   mkdirSync(home, { recursive: true });
   process.env.OPENCODEX_HOME = home;
+  globalThis.fetch = originalFetch;
   resetMirasimTransportStateForTests();
 });
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   resetMirasimTransportStateForTests();
   if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
   else process.env.OPENCODEX_HOME = previousHome;
@@ -270,6 +273,122 @@ describe("Mirasim auxiliary inference endpoints", () => {
     expect(response.status).toBe(502);
     expect(performance.now() - started).toBeLessThan(250);
     expect(await response.text()).toContain("Mirasim count_tokens request timed out");
+  });
+
+  test("alpha/search force-refreshes OAuth after the signed transport returns an authenticated 401", async () => {
+    await saveCredential("mirasim", syntheticCredential());
+    const refreshedAccess = "mirasim-search-new-access";
+    let refreshCalls = 0;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      const url = input instanceof Request ? input.url : input.toString();
+      expect(new URL(url).pathname).toBe("/auth/refresh");
+      refreshCalls += 1;
+      return new Response(JSON.stringify({
+        access_token: refreshedAccess,
+        refresh_token: "mirasim-search-new-refresh",
+        expires_in: 1800,
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+
+    let sessionCalls = 0;
+    let searchCalls = 0;
+    const relayFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      const bearer = new Headers(init?.headers).get("authorization");
+      if (path === "/v1/device/session") {
+        sessionCalls += 1;
+        if (bearer === "Bearer mirasim-endpoint-access") {
+          return new Response(JSON.stringify({ ticket: `old-search-ticket-${sessionCalls}`, expiresIn: 600 }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        expect(bearer).toBe(`Bearer ${refreshedAccess}`);
+        return new Response(JSON.stringify({ ticket: "fresh-search-ticket", expiresIn: 600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/v1/alpha/search") {
+        searchCalls += 1;
+        if (bearer?.startsWith("Bearer old-search-ticket-")) {
+          return new Response(JSON.stringify({ error: "expired access token" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        expect(bearer).toBe("Bearer fresh-search-ticket");
+        return new Response(JSON.stringify({ output: "recovered search" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const response = await handleSearch(new Request("http://127.0.0.1/v1/alpha/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mirasim/gpt-5.6-sol",
+        commands: { search_query: [{ q: "recover" }] },
+      }),
+    }), mirasimConfig(relayFetch), {} as RequestLogContext);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ output: "recovered search" });
+    expect(refreshCalls).toBe(1);
+    expect(sessionCalls).toBe(2);
+    expect(searchCalls).toBe(2);
+  });
+
+  test("alpha/search preserves the original authenticated 401 body when refreshed replay cannot be built", async () => {
+    await saveCredential("mirasim", syntheticCredential());
+    const refreshedAccess = "mirasim-search-new-access";
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      access_token: refreshedAccess,
+      refresh_token: "mirasim-search-new-refresh",
+      expires_in: 1800,
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+    let oldSessionCalls = 0;
+    const relayFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      const bearer = new Headers(init?.headers).get("authorization");
+      if (path === "/v1/device/session") {
+        if (bearer === `Bearer ${refreshedAccess}`) throw new Error("replacement relay unavailable");
+        oldSessionCalls += 1;
+        return new Response(JSON.stringify({ ticket: `old-search-ticket-${oldSessionCalls}`, expiresIn: 600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/v1/alpha/search") {
+        return new Response(JSON.stringify({ error: "original authenticated rejection" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const response = await handleSearch(new Request("http://127.0.0.1/v1/alpha/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "mirasim/gpt-5.6-sol",
+        commands: { search_query: [{ q: "preserve rejection" }] },
+      }),
+    }), mirasimConfig(relayFetch), {} as RequestLogContext);
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "original authenticated rejection" });
   });
 
   test("alpha/search routes a Mirasim GPT model through the signed inference transport", async () => {
