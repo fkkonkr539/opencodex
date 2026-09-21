@@ -575,6 +575,22 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
       };
     }
   }
+  if (candidate.mirasim && typeof candidate.mirasim === "object") {
+    const mirasim = candidate.mirasim;
+    const cleanMirasim = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !value.includes("\0") ? trimmed : undefined;
+    };
+    const devicePrivateKey = cleanMirasim(mirasim.devicePrivateKey, 16_384);
+    const relayUrl = cleanMirasim(mirasim.relayUrl, 2048);
+    const adminUrl = cleanMirasim(mirasim.adminUrl, 2048);
+    const clientVersion = cleanMirasim(mirasim.clientVersion, 128);
+    // The private key is load-bearing. Metadata-only legacy/crafted rows are discarded.
+    if (devicePrivateKey && relayUrl && adminUrl && clientVersion) {
+      normalized.mirasim = { devicePrivateKey, relayUrl, adminUrl, clientVersion };
+    }
+  }
   return normalized;
 }
 
@@ -1111,7 +1127,12 @@ export async function replaceProviderAccountSet(
       activeAccountId: set.activeAccountId,
       accounts: set.accounts.map(account => ({
         id: account.id,
-        credential: { ...account.credential, ...(account.credential.kiro ? { kiro: { ...account.credential.kiro } } : {}) },
+        credential: {
+          ...account.credential,
+          ...(account.credential.kiro ? { kiro: { ...account.credential.kiro } } : {}),
+          ...(account.credential.muse ? { muse: { ...account.credential.muse } } : {}),
+          ...(account.credential.mirasim ? { mirasim: { ...account.credential.mirasim } } : {}),
+        },
         ...(account.alias ? { alias: account.alias } : {}),
         ...(account.needsReauth ? { needsReauth: true } : {}),
         ...(account.addedAt !== undefined ? { addedAt: account.addedAt } : {}),

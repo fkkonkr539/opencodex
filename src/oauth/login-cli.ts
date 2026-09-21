@@ -9,7 +9,7 @@ import {
   requestBoundLocalProviderReload,
   type LocalProviderReloadResult,
 } from "../server/local-provider-reload-client";
-import { DEPRECATED_OAUTH_PROVIDER_ALIASES, isPublicOAuthProvider, listOAuthProviders, runLogin } from "./index";
+import { DEPRECATED_OAUTH_PROVIDER_ALIASES, isPublicOAuthProvider, listOAuthProviders, runLogin, type LoginOpts } from "./index";
 import { KEY_LOGIN_PROVIDERS, isKeyLoginProvider, validateApiKey, type KeyLoginProvider } from "./key-providers";
 import type { OcxConfig, OcxProviderConfig } from "../types";
 import { configuredAdminToken } from "../lib/admin-secrets";
@@ -115,11 +115,43 @@ export function loginUsageMessage(): string {
   return `Usage: ocx login <provider>\n`
     + `  Codex / ChatGPT: ocx login codex   (account pool, needs a running proxy; 'chatgpt' and\n`
     + `                   'openai' are the same route. An OpenAI platform key is 'openai-apikey'.)\n`
+    + `  Mirasim email: ocx login mirasim --email <address> [--code <code>]\n`
     + `  OAuth login:   ${listOAuthProviders().join(", ")}\n`
     + `  API-key login: ${Object.keys(KEY_LOGIN_PROVIDERS).join(", ")}`;
 }
 
-export async function handleLogin(provider?: string, deps: LoginCliDeps = {}): Promise<void> {
+export function parseMirasimLoginOpts(args: readonly string[]): LoginOpts | undefined {
+  if (args.length === 0) return undefined;
+  let email: string | undefined;
+  let code: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    if (arg === "--email") {
+      const value = args[++index]?.trim();
+      if (!value) throw new Error("Usage: ocx login mirasim --email <address> [--code <code>]");
+      email = value;
+      continue;
+    }
+    if (arg === "--code") {
+      const value = args[++index]?.trim();
+      if (!value) throw new Error("Usage: ocx login mirasim --email <address> [--code <code>]");
+      code = value;
+      continue;
+    }
+    throw new Error(`Unknown Mirasim login option: ${arg}`);
+  }
+  if (!email) throw new Error("--code requires --email for Mirasim login");
+  return {
+    mirasimEmail: email,
+    ...(code ? { mirasimCode: code } : {}),
+  };
+}
+
+export async function handleLogin(
+  provider?: string,
+  deps: LoginCliDeps = {},
+  providerArgs: readonly string[] = [],
+): Promise<void> {
   const name = (provider ?? "").trim().toLowerCase();
   // A removed provider id reached through its alias still logs in — the merged
   // successor owns the flow. Warn rather than silently reroute so scripts and
@@ -129,13 +161,20 @@ export async function handleLogin(provider?: string, deps: LoginCliDeps = {}): P
     console.error(`${name} is deprecated; logging in as ${alias}`);
     return handleOAuthLogin(alias, deps);
   }
-  if (isPublicOAuthProvider(name)) return handleOAuthLogin(name, deps);
+  if (isPublicOAuthProvider(name)) {
+    const opts = name === "mirasim" ? parseMirasimLoginOpts(providerArgs) : undefined;
+    return handleOAuthLogin(name, deps, opts);
+  }
   if (isKeyLoginProvider(name)) return handleKeyLogin(name, deps);
   console.error(loginUsageMessage());
   process.exit(1);
 }
 
-export async function handleOAuthLogin(name: string, deps: LoginCliDeps = {}): Promise<void> {
+export async function handleOAuthLogin(
+  name: string,
+  deps: LoginCliDeps = {},
+  opts?: LoginOpts,
+): Promise<void> {
   const login = deps.runLogin ?? runLogin;
   const launch = deps.openUrl ?? openUrl;
   const browser = createBrowserLaunchReport(deps.warn);
@@ -150,13 +189,13 @@ export async function handleOAuthLogin(name: string, deps: LoginCliDeps = {}): P
         browser.track(launch(url));
       },
       onProgress: (m) => console.log(`   ${m}`),
-      onManualCodeInput: async () => {
+      onManualCodeInput: async (_expectedState, prompt) => {
         // "or wait for browser" is a lie if nothing opened, and a warning printed after readline
         // has drawn the prompt lands on the line the user is typing on.
         await browser.settled();
-        return await ask("Paste redirect URL or code (or wait for browser): ");
+        return await ask(prompt ?? "Paste redirect URL or code (or wait for browser): ");
       },
-    });
+    }, opts);
   });
   // A device or polling provider never prompts, so nothing above waited on the launcher. It is
   // still owed an answer before this claims the login worked.

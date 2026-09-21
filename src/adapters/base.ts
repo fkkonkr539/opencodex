@@ -48,6 +48,13 @@ export interface ProviderAdapter {
   name: string;
 
   /**
+   * Native Responses passthrough capability. Fixed-wire adapters set `passthrough`; mixed-wire
+   * adapters may decide from the routed request before any upstream request is built.
+   */
+  passthrough?: boolean;
+  passthroughFor?(parsed: OcxParsedRequest): boolean;
+
+  /**
    * This adapter reports every physical inference send through `IncomingMeta.onPhysicalSend`,
    * including its first.
    *
@@ -111,6 +118,13 @@ export interface ProviderAdapter {
 
   /** Exact no-field observation for runTurn adapters, which expose no AdapterRequest object. */
   tierLogForRunTurn?(parsed: OcxParsedRequest): AdapterTierMetadata | undefined;
+}
+
+export function adapterIsPassthrough(
+  adapter: ProviderAdapter,
+  parsed: OcxParsedRequest,
+): boolean {
+  return adapter.passthrough === true || adapter.passthroughFor?.(parsed) === true;
 }
 
 export interface AdapterRequest {

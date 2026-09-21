@@ -71,6 +71,11 @@ describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
     baseUrl: "https://api.openai.com/v1",
     authMode: "key",
   } as OcxProviderConfig;
+  const mirasim = {
+    adapter: "mirasim",
+    baseUrl: "https://relay.mirasim.ai",
+    authMode: "oauth",
+  } as OcxProviderConfig;
 
   test("accepts the canonical ChatGPT backend and the official OpenAI API", () => {
     expect(supportsNativeResponsesCompactEndpoint("openai", canonicalForward)).toBe(true);
@@ -92,6 +97,15 @@ describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
       ...officialApi,
       baseUrl: "https://gateway.example/v1",
     })).toBe(false);
+  });
+
+  test("accepts only the canonical Mirasim relay for native signed compact", () => {
+    expect(supportsNativeResponsesCompactEndpoint("mirasim", mirasim)).toBe(true);
+    expect(supportsNativeResponsesCompactEndpoint("mirasim", {
+      ...mirasim,
+      baseUrl: "https://gateway.example",
+    })).toBe(false);
+    expect(supportsNativeResponsesCompactEndpoint("renamed-mirasim", mirasim)).toBe(false);
   });
 });
 

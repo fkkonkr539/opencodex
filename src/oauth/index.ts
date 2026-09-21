@@ -42,6 +42,7 @@ import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
+import { loginMirasim, mirasimRelayUrl, refreshMirasimToken } from "./mirasim";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -171,6 +172,18 @@ export interface LoginOpts {
   /** When set, persist into this account slot and require matching identity. */
   reauthAccountId?: string;
   /**
+   * Management-owned browser origin for Mirasim OAuth.
+   * The GUI supplies this so Mirasim can return to the long-lived OpenCodex server
+   * instead of a random ephemeral loopback listener.
+   */
+  mirasimBrowserBaseUrl?: string;
+  /** Dashboard/browser locale forwarded to the Mirasim management-owned OAuth pages. */
+  mirasimBrowserLocale?: string;
+  /** Mirasim CLI-only email-code login. Browser/GUI login leaves these unset. */
+  mirasimEmail?: string;
+  /** Optional already-received Mirasim email verification code. */
+  mirasimCode?: string;
+  /**
    * ChatGPT only: `device` selects the deviceauth grant instead of the
    * localhost:1455 callback flow, for hosts with no browser or no loopback
    * listener (#3366). Ignored by every other provider.
@@ -217,6 +230,30 @@ function oauthDefaultModel(id: string): string {
 }
 
 export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
+  mirasim: {
+    login: (ctrl, opts) => loginMirasim(ctrl, {
+      ...(opts?.mirasimBrowserBaseUrl ? { browserBaseUrl: opts.mirasimBrowserBaseUrl } : {}),
+      ...(opts?.mirasimBrowserLocale ? { browserLocale: opts.mirasimBrowserLocale } : {}),
+      ...(opts?.mirasimEmail ? { email: opts.mirasimEmail } : {}),
+      ...(opts?.mirasimCode ? { code: opts.mirasimCode } : {}),
+    }),
+    refresh: (refreshToken, signal, credential) =>
+      refreshMirasimToken(refreshToken, signal, credential),
+    providerConfig: {
+      ...oauthConfig("mirasim"),
+      baseUrl: mirasimRelayUrl(),
+      upstreamHttpVersion: "http1.1",
+    },
+    resolveProviderConfig: () => ({
+      ...oauthConfig("mirasim"),
+      baseUrl: mirasimRelayUrl(),
+      upstreamHttpVersion: "http1.1",
+    }),
+    defaultModel: oauthDefaultModel("mirasim"),
+    // Mirasim refresh tokens are used only when a request needs a fresh bearer. Avoid creating
+    // unattended auth traffic on behalf of a relay account.
+    defaultRefreshPolicy: "lazy-only",
+  },
   "command-code": {
     // Add-account/reauth must not reimport the current local CLI credential.
     login: (ctrl, opts) => loginCommandCode(ctrl, { importLocal: opts?.forceLogin ? "off" : "fallback" }),
@@ -615,6 +652,7 @@ export async function getValidAccessTokenSnapshot(provider: string): Promise<OAu
 /** Providers whose upstream-401 replay path may force a snapshot refresh. */
 const FORCE_REFRESH_PROVIDERS = new Set([
   "xai",
+  "mirasim",
   "github-copilot",
   "kiro",
   "google-antigravity",
