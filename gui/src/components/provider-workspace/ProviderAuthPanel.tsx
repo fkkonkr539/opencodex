@@ -325,9 +325,9 @@ export default function ProviderAuthPanel({
   }, [accounts, item.name]);
 
   const filteredAndSortedAccounts = useMemo(() => {
-    const filtered = filterAccounts(analyzedAccounts, accountFilter, accountSearch);
-    return sortAccounts(filtered, accountSort, accountFilter);
-  }, [analyzedAccounts, accountFilter, accountSearch, accountSort]);
+    const filtered = filterAccounts(analyzedAccounts, effectiveAccountFilter, accountSearch);
+    return sortAccounts(filtered, accountSort, effectiveAccountFilter);
+  }, [analyzedAccounts, effectiveAccountFilter, accountSearch, accountSort]);
   const refreshQuota = async (accountId?: string) => {
     if (!onRefreshQuota || refreshingQuota) return;
     const generation = ++quotaRefreshGeneration.current;
@@ -342,6 +342,19 @@ export default function ProviderAuthPanel({
         result: { ok: false, text: t("codexAuth.quotaRefreshFailed") } });
     }
   };
+
+  const autoProbedKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${item.name}:${accounts.map(a => a.id).join(",")}`;
+    if (autoProbedKeyRef.current === key) return;
+    if (isOauth && accounts.length > 0 && accounts.some(a => !a.quota && a.quotaMode !== "unsupported") && onRefreshQuota) {
+      const timer = setTimeout(() => {
+        autoProbedKeyRef.current = key;
+        void onRefreshQuota(item.name);
+      }, 50);
+      return () => { clearTimeout(timer); };
+    }
+  }, [item.name, isOauth, accounts, onRefreshQuota]);
 
   if (surface === "codex-accounts") {
     return (
@@ -539,7 +552,7 @@ export default function ProviderAuthPanel({
                   providerName={item.name}
                   analyzedList={analyzedAccounts}
                   showModelFamilies={showModelFamilies}
-                  filter={accountFilter}
+                  filter={effectiveAccountFilter}
                   onFilterChange={handleFilterChange}
                   sortKey={accountSort}
                   onSortChange={handleSortChange}
@@ -592,7 +605,7 @@ export default function ProviderAuthPanel({
                 ) : (
                   <div className="pwi-auth-state pwi-auth-state--empty" style={{ justifyContent: "center", gap: 12 }}>
                     <span>{t("modal.noMatch")}</span>
-                    {accountFilter !== "all" && (
+                    {effectiveAccountFilter !== "all" && (
                       <button type="button" className="btn btn-ghost btn-sm" onClick={() => handleFilterChange("all")}>
                         {t("pws.filterAllAccounts")}
                       </button>

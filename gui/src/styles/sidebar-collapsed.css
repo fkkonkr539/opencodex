@@ -71,6 +71,11 @@
     cursor: pointer !important;
   }
 
+  .sidebar.sidebar--collapsed .lang-toggle:focus-within .select-trigger {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
   .sidebar.sidebar--collapsed .lang-toggle .select-trigger > span,
   .sidebar.sidebar--collapsed .lang-toggle .select-trigger > svg {
     display: none !important;

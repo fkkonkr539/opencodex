@@ -180,7 +180,7 @@ export default function ProviderDetails({
       if (settingsDirty && tab === "settings") {
         setPendingLeave("accounts");
       } else {
-        setTab("accounts");
+        commitTab("accounts");
       }
     }
   }

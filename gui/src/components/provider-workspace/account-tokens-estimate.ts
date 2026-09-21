@@ -183,8 +183,20 @@ export function sha256Hex(str: string): string {
   return hexParts.join("");
 }
 
+// Mirrors baseProviderLabel (src/providers/label.ts): the server stamps log labels
+// under the normalized provider, so the GUI must hash the same value or lookups miss.
+function baseProviderLabelForLog(provider: string): string {
+  const canonical = provider === "chatgpt" || provider === "openai-multi" ? "openai" : provider;
+  if (canonical !== provider) return canonical;
+  const cut = provider.lastIndexOf("-");
+  if (cut <= 0) return provider;
+  const suffix = provider.slice(cut + 1);
+  if (suffix === "main" || /^[pa][a-f0-9]{6}$/.test(suffix)) return provider.slice(0, cut);
+  return provider;
+}
+
 export function computeOAuthAccountLogLabel(accountId: string, provider = ""): string {
-  return "o" + sha256Hex(provider + "\u0000" + accountId).slice(0, 6);
+  return "o" + sha256Hex(baseProviderLabelForLog(provider) + "\u0000" + accountId).slice(0, 6);
 }
 
 /** Format raw token number to Millions (M) and Billions (~B). */

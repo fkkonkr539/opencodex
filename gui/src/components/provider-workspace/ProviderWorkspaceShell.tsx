@@ -534,14 +534,18 @@ export default function ProviderWorkspaceShell({
           className="pws-rail-list"
           role="listbox"
           aria-label={t("pws.providersAria")}
+          aria-orientation={typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches ? "horizontal" : undefined}
           onKeyDown={e => {
+            const horizontal = typeof window !== "undefined" && window.matchMedia("(max-width: 768px)").matches;
             const options = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'));
             if (options.length === 0) return;
             const active = document.activeElement as HTMLElement | null;
             const idx = options.findIndex(el => el === active || el.contains(active));
-            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            const leftRight = horizontal ? (e.key === "ArrowRight" || e.key === "ArrowLeft") : false;
+            const upDown = e.key === "ArrowDown" || e.key === "ArrowUp";
+            if (upDown || leftRight) {
               e.preventDefault();
-              const delta = e.key === "ArrowDown" ? 1 : -1;
+              const delta = (e.key === "ArrowDown" || e.key === "ArrowRight") ? 1 : -1;
               const next = idx < 0 ? (delta > 0 ? 0 : options.length - 1) : (idx + delta + options.length) % options.length;
               options[next]?.focus();
               return;

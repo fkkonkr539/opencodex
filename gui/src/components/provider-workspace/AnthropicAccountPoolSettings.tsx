@@ -6,7 +6,7 @@
  * contract without quotaWindow: the toggle is proactive pre-dispatch selection,
  * while 429 rotation stays presence-driven.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
 import { getPoolSettings, putPoolSettings } from "../../pool-settings";
 import {
@@ -67,6 +67,17 @@ export default function AnthropicAccountPoolSettings({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState(false);
+  const [visibleProvider, setVisibleProvider] = useState(provider);
+  // Provider switch: clear stale pool state during render (same adjustment pattern
+  // as ProviderDetails) so the previous provider is never shown while reloading.
+  const providerRef = useRef(provider);
+  useEffect(() => { providerRef.current = provider; }, [provider]);
+
+  if (provider !== visibleProvider) {
+    setVisibleProvider(provider);
+    setState(null);
+    setLoadError(false);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -113,6 +124,7 @@ export default function AnthropicAccountPoolSettings({
     quotaWindow: AccountPoolQuotaWindow;
   }) => {
     const previousState = state;
+    const saveProvider = provider;
     setState({
       enabled: next.enabled,
       threshold: next.threshold,
@@ -132,6 +144,7 @@ export default function AnthropicAccountPoolSettings({
         ...(isAnthropic ? { quotaWindow: next.quotaWindow } : {}),
       });
       if (!json) throw new Error("save");
+      if (saveProvider !== providerRef.current) return;
       const savedStrategy = normalizeAccountPoolStrategy(json?.strategy ?? next.strategy);
       const savedSticky = normalizeAccountPoolStickyLimit(json?.stickyLimit ?? next.stickyLimit);
       const savedWindow = json?.quotaWindow == null
@@ -148,6 +161,7 @@ export default function AnthropicAccountPoolSettings({
       setDraft(String(next.threshold));
       setStickyDraft(String(savedSticky));
     } catch {
+      if (saveProvider !== providerRef.current) return;
       setError(t(isAnthropic ? "anthropicPool.saveFailed" : "genericPool.saveFailed"));
       if (previousState) {
         setState(previousState);

@@ -58,7 +58,8 @@ export default function AccountAuthChoiceModal({
       onKeyDown={event => {
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); }
         if (event.key !== "Tab") return;
-        const buttons = dialog.current?.querySelectorAll<HTMLButtonElement>("button:not([disabled])");
+        const focusables = [...(dialog.current?.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? [])].filter(el => el.offsetParent !== null);
+        const buttons = focusables as HTMLButtonElement[];
         const first = buttons?.[0], last = buttons?.[buttons.length - 1];
         if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
         else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }

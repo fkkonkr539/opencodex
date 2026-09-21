@@ -207,4 +207,84 @@ describe("generic OAuth account pool settings", () => {
     expect(toggle.disabled).toBe(true);
     expect(host.textContent).toContain("at least two OAuth accounts");
   });
-});
+})
+
+  test(
+    "ignores stale GET and PUT completions after switching providers",
+    async () => {
+      const strategies: Record<string, string> = { "provider-a": "quota", "provider-b": "reset-first" };
+      const payload = (provider: string) => ({ enabled: true, autoSwitchThreshold: 80, strategy: strategies[provider], stickyLimit: 1, supported: ["enabled", "strategy", "stickyLimit", "autoSwitchThreshold"] });
+      const pendingGets = new Map<string, (v: Response) => void>();
+      const pendingPuts = new Map<string, { resolve: (v: Response) => void; body: Record<string, unknown> }>();
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const params = new URL(url, "http://proxy").searchParams;
+        if (url.includes("/api/pool/settings") && init?.method === "PUT") {
+          const body = init.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+          const key = typeof body.provider === "string" ? (body.provider as string) : (params.get("provider") ?? "");
+          return new Promise<Response>((resolve) => { pendingPuts.set(key, { resolve, body }); });
+        }
+        if (url.includes("/api/pool/settings")) {
+          const provider = params.get("provider") ?? "";
+          if (provider === "provider-a") return new Promise<Response>((resolve) => { pendingGets.set(provider, resolve); });
+          return new Response(JSON.stringify(payload(provider)), { status: 200 });
+        }
+        throw new Error("unexpected fetch: " + url);
+      }) as typeof fetch;
+
+      const host = testWindow.document.createElement("div");
+      testWindow.document.body.appendChild(host as never);
+      const { createRoot } = await import("react-dom/client");
+      let root: Root | null = null;
+      const renderProvider = async (provider: string) => {
+        await act(async () => {
+          if (!root) { root = createRoot(host); mountedRoots.push(root); }
+          root.render(
+            <LanguageProvider>
+              <AnthropicAccountPoolSettings apiBase="http://proxy" accountCount={2} provider={provider} />
+            </LanguageProvider>,
+          );
+        });
+        await act(async () => { await flush(); });
+      };
+      const strategyLabel = (): string | null => {
+        const cands = [...testWindow.document.querySelectorAll("button")] as HTMLButtonElement[];
+        const el = cands.find((b) => (b.id || "").slice(-9) === "-strategy");
+        return el ? (el.textContent ?? "") : null;
+      };
+      const poolToggle = (): HTMLButtonElement | null => host.querySelector("button.toggle");
+
+      await renderProvider("provider-a");
+      await renderProvider("provider-b");
+      expect(strategyLabel()).toBe("Soonest reset first");
+      const resolveA = pendingGets.get("provider-a");
+      if (!resolveA) throw new Error("A GET was never issued");
+      await act(async () => {
+        resolveA(new Response(JSON.stringify(payload("provider-a")), { status: 200 }));
+        await flush();
+      });
+      expect(strategyLabel()).toBe("Soonest reset first");
+
+      const toggle = poolToggle();
+      if (!toggle) throw new Error("toggle missing");
+      await act(async () => { toggle.click(); await flush(); });
+      const put = pendingPuts.get("provider-b");
+      if (!put) throw new Error("B PUT was never issued");
+      await renderProvider("provider-a");
+      expect(strategyLabel()).toBeNull();
+      const resolveA2 = pendingGets.get("provider-a");
+      if (!resolveA2) throw new Error("second A GET was never issued");
+      await act(async () => {
+        resolveA2(new Response(JSON.stringify(payload("provider-a")), { status: 200 }));
+        await flush();
+      });
+      expect(strategyLabel()).toBe("Quota");
+      expect(poolToggle()?.getAttribute("aria-pressed")).toBe("true");
+      await act(async () => {
+        put.resolve(new Response(JSON.stringify({ ...put.body, supported: payload("provider-b").supported }), { status: 200 }));
+        await flush();
+      });
+      expect(strategyLabel()).toBe("Quota");
+      expect(poolToggle()?.getAttribute("aria-pressed")).toBe("true");
+    },
+  );
