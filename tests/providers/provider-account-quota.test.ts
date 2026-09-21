@@ -603,30 +603,30 @@ describe("explicit OAuth account quota readers", () => {
     expect(calls).toBe(0);
   });
 
-  test("OAuth roster uses four workers and force joins same-identity work", async () => {
+  test("OAuth roster uses parallel workers and force joins same-identity work", async () => {
     for (let i = 0; i < 6; i++) {
       await saveCredential("cursor", { access: `cursor-${i}`, refresh: `refresh-${i}`, expires: Date.now() + 60 * 60_000, accountId: `user-${i}` });
     }
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    let fourStarted!: () => void;
-    const entered = new Promise<void>(resolve => { fourStarted = resolve; });
+    let rosterStarted!: () => void;
+    const entered = new Promise<void>(resolve => { rosterStarted = resolve; });
     let calls = 0;
     let active = 0;
     let peak = 0;
     globalThis.fetch = (async () => {
       calls++; active++; peak = Math.max(peak, active);
-      if (calls === 4) fourStarted();
+      if (calls === 6) rosterStarted();
       await gate;
       active--;
       return Response.json({ planUsage: { totalPercentUsed: 20 } });
     }) as typeof fetch;
     const pending = fetchProviderAccountQuotas("cursor");
     await entered;
-    expect(calls).toBe(4);
+    expect(calls).toBe(6);
     release();
     expect(await pending).toHaveLength(6);
-    expect(peak).toBe(4);
+    expect(peak).toBe(6);
     await fetchProviderAccountQuotas("cursor");
     expect(calls).toBe(6);
     await fetchProviderAccountQuotas("cursor", true);
