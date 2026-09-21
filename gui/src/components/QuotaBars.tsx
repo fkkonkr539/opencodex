@@ -25,6 +25,7 @@ export type QuotaBarRow = {
  */
 function rawCustomWindowRank(rawLabel: string): number {
   if (rawLabel === "5h") return 0;
+  if (/^Model\s*·\s*7d_(claude|fable)$/i.test(rawLabel)) return 1.5;
   if (rawLabel === "First-party models") return 2;
   if (rawLabel === "API usage") return 3;
   if (rawLabel === "Total subscription credits") return 4.5;
@@ -53,6 +54,11 @@ export function isCustomQuotaWindowIncomplete(
 }
 
 function localizeCustomQuotaLabel(rawLabel: string, t: TFn): string {
+  const mirasimWeekly = rawLabel.match(/^Model\s*·\s*7d_(claude|fable)$/i);
+  if (mirasimWeekly) {
+    const family = mirasimWeekly[1]?.toLowerCase() === "fable" ? "Fable" : "Claude";
+    return `${family} · ${t("quota.weeklyLimit")}`;
+  }
   switch (rawLabel) {
     case "First-party models":
       return t("quota.cursorFirstParty");
