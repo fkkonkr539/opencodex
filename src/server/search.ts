@@ -136,12 +136,13 @@ async function handleMirasimSearch(
     if (upstreamResponse.status === 401) {
       try {
         const refreshed = await forceRefreshOAuthAccessSnapshot(snapshot);
-        try { await upstreamResponse.body?.cancel(); } catch { /* already closed */ }
-        upstreamResponse = await fetchMirasim(outbound, refreshed.accessToken, {
+        const replacement = await fetchMirasim(outbound, refreshed.accessToken, {
           abortSignal: linkedSignal.signal,
           timeoutMs,
           executor,
         });
+        try { await upstreamResponse.body?.cancel(); } catch { /* already closed */ }
+        upstreamResponse = replacement;
       } catch {
         // Return the relay's authenticated rejection below. The public response never reflects
         // token/device material or the refresh error body.

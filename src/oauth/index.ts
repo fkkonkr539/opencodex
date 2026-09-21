@@ -42,7 +42,12 @@ import { validateDevinApiBaseUrl } from "./devin/api-base";
 import { loginGithubCopilot, refreshGithubCopilotToken, validateCopilotApiBaseUrl } from "./github-copilot";
 import { loginCommandCode, refreshCommandCodeToken } from "./command-code";
 import { loginMetaMuse, refreshMetaMuseToken } from "./meta-muse";
-import { loginMirasim, mirasimRelayUrl, refreshMirasimToken } from "./mirasim";
+import {
+  loginMirasim,
+  MirasimTokenRefreshError,
+  mirasimRelayUrl,
+  refreshMirasimToken,
+} from "./mirasim";
 import { loginOrcaRouter, orcaRouterInferenceBaseUrl, refreshOrcaRouterKey } from "./orcarouter";
 import { ANTIGRAVITY_REQUEST_UA } from "../adapters/google-antigravity-wire";
 import { deriveOAuthDefaultModel, deriveOAuthProviderConfig } from "../providers/derive";
@@ -241,7 +246,6 @@ export const OAUTH_PROVIDERS: Record<string, OAuthProviderDef> = {
       refreshMirasimToken(refreshToken, signal, credential),
     providerConfig: {
       ...oauthConfig("mirasim"),
-      baseUrl: mirasimRelayUrl(),
       upstreamHttpVersion: "http1.1",
     },
     resolveProviderConfig: () => ({
@@ -710,6 +714,7 @@ function isTerminalRefreshError(err: unknown): boolean {
 function terminal(error:unknown):boolean{
   if(error instanceof XaiTokenRequestError)return ["invalid_grant","refresh_token_reused","revoked_token"].includes(error.oauthError??"");
   if(error instanceof AnthropicTokenError)return (error.httpStatus===400||error.httpStatus===401)&&["invalid_grant","refresh_token_reused","revoked","revoked_token","refresh_token_revoked"].includes(error.oauthError??"");
+  if(error instanceof MirasimTokenRefreshError)return (error.httpStatus===400||error.httpStatus===401)&&["invalid_grant","refresh_token_reused","revoked","revoked_token","refresh_token_revoked","expired_token"].includes(error.oauthError??"");
   if(error instanceof KiroTokenRefreshError)return (error.httpStatus===400||error.httpStatus===401)&&error.oauthError!==undefined;
   if(error instanceof NousTokenError)return error.terminal===true||["invalid_grant","refresh_token_reused","revoked","revoked_token","expired_token"].includes(error.oauthError??"");
   // Local durable-write/read/cleanup failures are operational, not credential
@@ -1055,8 +1060,9 @@ export async function refreshGenericAccountWithLock(
   logOAuthEvent("OAuth refresh started", { provider, accountId });
   const guard = await (deps.intentLock ?? createOAuthRefreshIntentLock(provider, accountId)).acquire();
   try {
-    const stored = getAccountCredential(provider, accountId);
-    if (!stored) throw new OAuthLoginRequiredError(provider);
+    const account = getAccountCredentialWithStatus(provider, accountId);
+    if (!account || account.needsReauth) throw new OAuthLoginRequiredError(provider);
+    const stored = account.credential;
     if (
       credentialGeneration(stored) !== credentialGeneration(callerCredential)
       && stored.expires > Date.now() + REFRESH_SKEW_MS

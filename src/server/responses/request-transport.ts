@@ -88,6 +88,7 @@ export async function prepareResponsesTransport(
   // existing openai-chat / anthropic adapters authenticate with no change.
   const isOAuth401ReplayProvider = (
     route.providerName === "xai"
+    || route.providerName === "mirasim"
     || route.providerName === "github-copilot"
     || route.providerName === "kiro"
     || route.providerName === "google-antigravity"

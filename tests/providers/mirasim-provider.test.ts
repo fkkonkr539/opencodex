@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createMirasimAdapter } from "../../src/adapters/mirasim";
 import {
   ensureMirasimClaudeAgentSystemMarker,
@@ -16,6 +19,16 @@ import { providerOAuthAccountQuotaMode, supportsPerAccountQuota } from "../../sr
 import { getProviderRegistryEntry } from "../../src/providers/registry";
 import type { OcxProviderConfig } from "../../src/types";
 import { withTestTranslatorBudget } from "../helpers/translator-budget";
+import { removeTreeWithRetry } from "../helpers/remove-tree";
+
+const previousHome = process.env.OPENCODEX_HOME;
+let home = "";
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), "opencodex-mirasim-provider-"));
+  mkdirSync(home, { recursive: true });
+  process.env.OPENCODEX_HOME = home;
+});
 
 function entry() {
   const found = getProviderRegistryEntry("mirasim");
@@ -32,7 +45,12 @@ function adapter() {
 }
 
 describe("Mirasim provider", () => {
-  afterEach(() => resetMirasimControlPlaneStateForTests());
+  afterEach(() => {
+    resetMirasimControlPlaneStateForTests();
+    if (previousHome === undefined) delete process.env.OPENCODEX_HOME;
+    else process.env.OPENCODEX_HOME = previousHome;
+    removeTreeWithRetry(home);
+  });
 
   test("is a native OAuth provider with an HTTP/1.1-pinned live catalog", () => {
     expect(entry().adapter).toBe("mirasim");

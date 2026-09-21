@@ -1646,6 +1646,8 @@ export function sanitizePassthroughHeaders(upstream: Headers, options?: CodexSaf
     "te",
     "trailer",
     "upgrade",
+    // Adapter-private routing metadata must never escape native passthrough responses.
+    "x-opencodex-mirasim-response-wire",
   ]);
   const out = new Headers();
   upstream.forEach((value, key) => {

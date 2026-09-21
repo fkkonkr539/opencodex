@@ -1319,31 +1319,62 @@ export async function preparePassthroughExchange(
       const refreshedBodyRefusal = refuseOversizedOutboundBody(request);
       if (refreshedBodyRefusal) return refreshedBodyRefusal;
       try {
-        upstreamResponse = await fetchWithTransientRetry(
-          recovery => {
-            transportState.noteRoutedAttemptSend(passthroughEstimate, recovery ?? "oauth-401");
-            return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
-              method: request.method,
-              headers: request.headers,
-              body: request.body,
-            }, recovery), upstream.signal, connectMs, parsed.stream,
-              providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+        if (refreshedAdapter.fetchResponse && refreshedAdapter.reportsPhysicalSends === true) {
+          await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, upstream.signal);
+          upstreamResponse = await refreshedAdapter.fetchResponse(request, {
+            abortSignal: upstream.signal,
+            timeoutMs: connectMs,
+            returnRawErrors: true,
+            stream: parsed.stream,
+            executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+              pacingSlotAcquired: true,
               nativeControl: nativeResponseControlEligible(route.provider, options.nativeControl) && options.inboundTransport === "websocket" && !options.comboAttempt
                 && responseEffects.plaintextV2AgentMessageToolNames.size === 0
                 ? options.nativeControl : undefined,
               dispatchOverride: oauthDispatch(request),
-                providerName: route.providerName,
-                modelId: route.modelId,
-                onCodexWsQuota: codexWsQuotaObserver(admissionState.authCtx, route.provider, route.modelId),
-                beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
-                  ? createCodexReserveDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
-              }),
-              route.provider.authMode === "forward")
-              .then(adoptObservedResponse);
-          },
-          { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()),
-            onSendsConsumed: noteTransientSends, claimAmbiguousResend: claimPreHeaderResend },
-        );
+              providerName: route.providerName,
+              modelId: route.modelId,
+              onCodexWsQuota: codexWsQuotaObserver(admissionState.authCtx, route.provider, route.modelId),
+              beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                ? createCodexReserveDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
+            }),
+            ...(adapterDispatchBudget ? { sendBudget: adapterDispatchBudget } : {}),
+            sendClass: "auth-recovery",
+            recovery: "oauth-401",
+            onPhysicalSend: send => noteAdapterPhysicalSend(
+              passthroughEstimate,
+              send,
+              { includeFirst: true },
+            ),
+            onRecoveryWithheld: noteAdapterRecoveryWithheld,
+          }).then(adoptObservedResponse);
+        } else {
+          upstreamResponse = await fetchWithTransientRetry(
+            recovery => {
+              transportState.noteRoutedAttemptSend(passthroughEstimate, recovery ?? "oauth-401");
+              return fetchWithHeaderTimeout(request.url, applyUpstreamRecoveryInit({
+                method: request.method,
+                headers: request.headers,
+                body: request.body,
+              }, recovery), upstream.signal, connectMs, parsed.stream,
+                providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                  nativeControl: nativeResponseControlEligible(route.provider, options.nativeControl) && options.inboundTransport === "websocket" && !options.comboAttempt
+                    && responseEffects.plaintextV2AgentMessageToolNames.size === 0
+                    ? options.nativeControl : undefined,
+                  dispatchOverride: oauthDispatch(request),
+                  providerName: route.providerName,
+                  modelId: route.modelId,
+                  onCodexWsQuota: codexWsQuotaObserver(admissionState.authCtx, route.provider, route.modelId),
+                  beforeDispatch: isCanonicalOpenAiForwardProvider(route.provider)
+                    ? createCodexReserveDispatchGuard(admissionState.authCtx, options.codexAuthPolicy ?? config, route.modelId, options.admission, options.visionDescribeTerminal === true) : undefined,
+                }),
+                route.provider.authMode === "forward")
+                .then(adoptObservedResponse);
+            },
+            { abortSignal: upstream.signal, label: safeHostLabel(request.url), attempts: remainingTransientSendBudget(transientSendAttempts()),
+              onSendsConsumed: noteTransientSends, claimAmbiguousResend: claimPreHeaderResend },
+          );
+        }
       } catch (err) {
         return transportFailureResponse(err);
       } finally {

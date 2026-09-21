@@ -1,4 +1,3 @@
-
 import { listCodexAuthAccountsSnapshot } from "../codex/auth-api";
 import { resolveEnvValue } from "../config";
 import { getAccountCredential, getAccountSet } from "../oauth/store";
@@ -28,7 +27,6 @@ import {
   isProviderQuotaReportCurrent,
   LAST_GOOD_MAX_AGE_MS,
   providerQuotaBeforePublishForTests,
-  report,
   routingEvidence,
   setProviderQuotaReportCache,
   TERMINAL_QUOTA_FAILURE,
@@ -62,13 +60,12 @@ import {
   fetchChatGptForwardQuota,
   fetchCursorQuota,
   fetchKiroQuota,
-  fetchMuseKeyQuota,
+  fetchMirasimQuotaReport, fetchMuseKeyQuota,
   fetchPassiveProviderQuota,
   fetchXaiQuota,
 } from "./quota/vendor-probes-oauth";
 import { fetchCommandCodeQuota, fetchKimiQuota, keyQuotaReaderForProvider } from "./quota/vendor-probes-key";
 import { antigravityQuotaDiagnosticIdentity, fetchAntigravityQuota, probeAntigravityUsageQuota } from "./quota/antigravity";
-import { fetchMirasimQuota } from "../adapters/mirasim/control-plane";
 
 export type { ProviderQuota, ProviderQuotaCreditsUsd, ProviderQuotaWindow } from "./quota-types";
 export { QUOTA_RESPONSE_MAX_BYTES } from "./quota-wire";
@@ -363,11 +360,7 @@ async function readExplicitAccountQuota(provider: string, accountId: string, con
     case "cursor": result = await fetchCursorQuota(provider, accessToken); break;
     case "kimi": result = await fetchKimiQuota(provider, config, accessToken); break;
     case "command-code": result = await fetchCommandCodeQuota(provider, config, accessToken); break;
-    case "mirasim": {
-      const quota = await fetchMirasimQuota(provider, config, accessToken);
-      result = quota ? report(provider, "mirasim:/v1/limits", quota) : null;
-      break;
-    }
+    case "mirasim": result = await fetchMirasimQuotaReport(provider, config, accessToken); break;
     default: return null;
   }
   return { result, identity, isCurrent };

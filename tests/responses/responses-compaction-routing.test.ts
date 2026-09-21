@@ -106,6 +106,10 @@ describe("supportsNativeResponsesCompactEndpoint (#422)", () => {
       baseUrl: "https://gateway.example",
     })).toBe(false);
     expect(supportsNativeResponsesCompactEndpoint("renamed-mirasim", mirasim)).toBe(false);
+    expect(supportsNativeResponsesCompactEndpoint("mirasim", {
+      ...mirasim,
+      adapter: "openai-responses",
+    })).toBe(false);
   });
 });
 

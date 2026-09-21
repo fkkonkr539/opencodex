@@ -90,6 +90,58 @@ function ticketResponse(): Response {
 }
 
 describe("Mirasim signed transport", () => {
+  test("degrades model discovery when one bearer ambiguously matches multiple account slots", async () => {
+    const first = syntheticCredential();
+    const second = {
+      ...syntheticCredential(),
+      access: first.access,
+      refresh: "mirasim-refresh-second",
+      accountId: "mirasim-second-account",
+    };
+    await saveCredential("mirasim", first);
+    await saveCredential("mirasim", second);
+
+    let fetchCalls = 0;
+    const provider = {
+      ...providerWithFetch((async () => { fetchCalls += 1; return new Response("unexpected"); }) as typeof fetch),
+      liveModels: true,
+      models: ["gpt-5.6-sol"],
+      defaultModel: "gpt-5.6-sol",
+    } as OcxProviderConfig & { fetch: typeof fetch };
+    const captured = {
+      name: "mirasim",
+      provider,
+      discovery: { maxResponseBytes: 1024 * 1024, maxModels: 256 },
+      request: {
+        method: "GET",
+        url: "https://relay.mirasim.ai/v1/models",
+        headersWithoutCredential: {},
+        headersWithCredential: {},
+      },
+      metadataModelIdCaseFold: false,
+      effectiveAlias: null,
+    } as unknown as CapturedProviderGather;
+
+    const result = await fetchProviderModelsWithAuth(captured, 60_000, undefined, {
+      kind: "observed",
+      resolve: () => ({ apiKey: first.access, observed: true }),
+    });
+    expect(result.outcome.state).toBe("degraded");
+    expect(result.models.map(model => model.id)).toContain("gpt-5.6-sol");
+    expect(fetchCalls).toBe(0);
+  });
+
+  test("drops Mirasim scalar metadata containing control characters while keeping PEM multiline-safe", async () => {
+    const valid = syntheticCredential();
+    await saveCredential("mirasim", {
+      ...valid,
+      mirasim: { ...valid.mirasim, clientVersion: "0.0.336\r\nInjected: yes" },
+    });
+    const stored = getAccountSet("mirasim")?.accounts[0]?.credential;
+    expect(stored?.mirasim).toBeUndefined();
+    expect(stored?.access).toBe(valid.access);
+  });
+
   test("keeps roster/model cache authority stable across access-token rotation", async () => {
     const initial = syntheticCredential();
     await saveCredential("mirasim", initial);

@@ -2,7 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import type { AdapterFetchContext, AdapterRequest } from "../base";
 import { createAdapterPhysicalSend } from "../physical-send";
 import { credentialGeneration, getAccountSet } from "../../oauth/store";
+import { mirasimClientVersion } from "../../oauth/mirasim";
 import type { MirasimOAuthMetadata } from "../../oauth/types";
+import { readBoundedResponseBytes } from "../../lib/bounded-body";
 import {
   providerOutboundGet,
   providerOutboundPost,
@@ -25,6 +27,27 @@ const INTERNAL_THREAD_HEADER = "x-opencodex-mirasim-thread";
 const INTERNAL_WIRE_HEADER = "x-opencodex-mirasim-wire";
 const CONTROL_PROVIDER_HEADER_NAMES = new Set(["x-mirasim-probe"]);
 
+class MirasimRelayStatusError extends Error {
+  readonly status: number;
+  readonly retryAfter?: string;
+
+  constructor(status: number, retryAfter?: string | null) {
+    super(`Mirasim relay rejected device-session mint with HTTP ${status}`);
+    this.name = "MirasimRelayStatusError";
+    this.status = status;
+    this.retryAfter = retryAfter?.trim() || undefined;
+  }
+}
+
+function statusErrorResponse(error: MirasimRelayStatusError): Response {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (error.retryAfter) headers.set("retry-after", error.retryAfter);
+  return new Response(JSON.stringify({ error: "Mirasim authentication failed" }), {
+    status: error.status,
+    headers,
+  });
+}
+
 interface StoredMirasimCredential {
   accountSlotId: string;
   accountIdentity: string;
@@ -33,14 +56,36 @@ interface StoredMirasimCredential {
   metadata: MirasimOAuthMetadata;
 }
 
+interface TicketAuth {
+  credential: string;
+  usedTicket: boolean;
+}
+
 interface TicketState {
+  generation: string;
   ticket?: string;
   expiresAt?: number;
   unmintableUntil?: number;
+  retryAt?: number;
+  failures: number;
+  lastStatus?: number;
+  refusedUntil?: number;
+  accessRefreshRequired?: boolean;
+  mintFlight?: Promise<TicketAuth>;
+  sessionId?: string;
+  lastUsedAt: number;
 }
 
-const ticketCache = new Map<string, TicketState>();
-const sessionCache = new Map<string, string>();
+type PhysicalSend = ReturnType<typeof createAdapterPhysicalSend>;
+
+const TICKET_BACKOFF_BASE_MS = 1_000;
+const TICKET_BACKOFF_MAX_MS = 30_000;
+const TICKET_RETRY_MAX_MS = 15 * 60 * 1000;
+const TICKET_REFUSAL_FLOOR_MS = 30_000;
+const TRANSPORT_STATE_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+const TRANSPORT_STATE_MAX_ENTRIES = 128;
+
+const transportStateCache = new Map<string, TicketState>();
 
 function cleanMetadataValue(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -91,7 +136,12 @@ function matchingCredential(accessToken: string): StoredMirasimCredential {
     accountIdentity: credential.accountId ?? account.id,
     generation: credentialGeneration(credential),
     accessToken,
-    metadata: credential.mirasim,
+    metadata: {
+      ...credential.mirasim,
+      // Protocol version belongs to this executable, not the persisted account snapshot.
+      // Upgrades must not keep sending an obsolete client version until the user signs in again.
+      clientVersion: mirasimClientVersion(),
+    },
   };
 }
 
@@ -119,10 +169,63 @@ export function mirasimCredentialCacheScope(accessToken: string): string {
     .digest("hex");
 }
 
-function ticketKey(credential: StoredMirasimCredential, deviceId: string): string {
+function stableTransportKey(credential: StoredMirasimCredential, deviceId: string): string {
   return createHash("sha256")
-    .update([credential.accountSlotId, credential.generation, deviceId].join("\0"))
+    .update([credential.accountSlotId, credential.accountIdentity, deviceId].join("\0"))
     .digest("hex");
+}
+
+function transportBudgetTargetKey(credential: StoredMirasimCredential): string {
+  return `mirasim:${new URL(credential.metadata.relayUrl).origin}:${credential.accountSlotId}`;
+}
+
+function pruneTransportState(now: number, keepKey: string): void {
+  for (const [key, state] of transportStateCache) {
+    if (key === keepKey || state.mintFlight) continue;
+    if (now - state.lastUsedAt > TRANSPORT_STATE_IDLE_TTL_MS) transportStateCache.delete(key);
+  }
+  if (transportStateCache.size < TRANSPORT_STATE_MAX_ENTRIES) return;
+  const candidates = [...transportStateCache.entries()]
+    .filter(([key, state]) => key !== keepKey && !state.mintFlight)
+    .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt);
+  while (transportStateCache.size >= TRANSPORT_STATE_MAX_ENTRIES && candidates.length > 0) {
+    const [key] = candidates.shift()!;
+    transportStateCache.delete(key);
+  }
+}
+
+function transportStateFor(
+  credential: StoredMirasimCredential,
+  deviceId: string,
+  now = Date.now(),
+): { key: string; state: TicketState } {
+  const key = stableTransportKey(credential, deviceId);
+  pruneTransportState(now, key);
+  let state = transportStateCache.get(key);
+  if (!state) {
+    state = {
+      generation: credential.generation,
+      failures: 0,
+      lastUsedAt: now,
+    };
+    transportStateCache.set(key, state);
+  } else {
+    state.lastUsedAt = now;
+    if (state.generation !== credential.generation) {
+      // Access/refresh tokens rotate; account/device identity and session identity do not.
+      // A ticket is credential-generation scoped, so drop only ticket/refusal state.
+      state.generation = credential.generation;
+      state.ticket = undefined;
+      state.expiresAt = undefined;
+      state.retryAt = undefined;
+      state.failures = 0;
+      state.lastStatus = undefined;
+      state.refusedUntil = undefined;
+      state.accessRefreshRequired = false;
+      state.mintFlight = undefined;
+    }
+  }
+  return { key, state };
 }
 
 function resolveTicketExpiry(now: number, payload: Record<string, unknown>): number {
@@ -138,12 +241,22 @@ function resolveTicketExpiry(now: number, payload: Record<string, unknown>): num
   return now + TICKET_DEFAULT_TTL_MS;
 }
 
-async function boundedControlJson(response: Response): Promise<Record<string, unknown>> {
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_CONTROL_BODY) {
+async function boundedControlJson(
+  response: Response,
+  inactivityTimeoutMs?: number,
+): Promise<Record<string, unknown>> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_CONTROL_BODY) {
+    try { await response.body?.cancel(); } catch { /* already closed */ }
     throw new Error("Mirasim device-session response is too large");
   }
+  const bounded = await readBoundedResponseBytes(response, {
+    maxBytes: MAX_CONTROL_BODY,
+    ...(inactivityTimeoutMs && inactivityTimeoutMs > 0 ? { inactivityTimeoutMs } : {}),
+  });
+  if (bounded.oversized) throw new Error("Mirasim device-session response is too large");
   try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bounded.bytes);
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
     return parsed as Record<string, unknown>;
@@ -158,6 +271,49 @@ function combineSignal(signal: AbortSignal | undefined, timeoutMs: number | unde
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
+function responseHeaderDeadline(
+  parent: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+): { signal: AbortSignal | undefined; clear: () => void } {
+  if (!timeoutMs || timeoutMs <= 0) return { signal: parent, clear: () => {} };
+  const deadline = new AbortController();
+  const timer = setTimeout(
+    () => deadline.abort(new DOMException("Mirasim response header timeout", "TimeoutError")),
+    timeoutMs,
+  );
+  return {
+    signal: parent ? AbortSignal.any([parent, deadline.signal]) : deadline.signal,
+    clear: () => clearTimeout(timer),
+  };
+}
+
+function retryAfterMs(value: string | null, now: number): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1000);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return Math.max(0, timestamp - now);
+}
+
+function noteTicketFailure(
+  state: TicketState,
+  status: number,
+  retryAfter: string | null,
+  retryable: boolean,
+  now: number,
+): void {
+  let delay = TICKET_BACKOFF_MAX_MS;
+  if (retryable) {
+    delay = Math.min(TICKET_BACKOFF_BASE_MS * (2 ** state.failures), TICKET_BACKOFF_MAX_MS);
+    state.failures += 1;
+  }
+  delay = retryAfterMs(retryAfter, now) ?? delay;
+  delay = Math.max(TICKET_BACKOFF_BASE_MS, Math.min(delay, TICKET_RETRY_MAX_MS));
+  state.retryAt = now + delay;
+  state.lastStatus = status;
+}
+
 function lowercaseHeaders(headers: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) out[name.toLowerCase()] = value;
@@ -167,69 +323,131 @@ function lowercaseHeaders(headers: Readonly<Record<string, string>>): Record<str
 async function mintDeviceTicket(
   credential: StoredMirasimCredential,
   ctx: AdapterFetchContext,
-): Promise<{ credential: string; usedTicket: boolean }> {
+  send: PhysicalSend,
+): Promise<TicketAuth> {
   const identity = createMirasimDeviceIdentity(credential.metadata.devicePrivateKey);
-  const key = ticketKey(credential, identity.deviceId);
-  const state = ticketCache.get(key) ?? {};
+  const { state } = transportStateFor(credential, identity.deviceId);
   const now = Date.now();
 
+  if (state.accessRefreshRequired) {
+    if (state.refusedUntil && now < state.refusedUntil) {
+      throw new MirasimRelayStatusError(401);
+    }
+    // Give a transiently unavailable auth service a bounded escape hatch: after the refusal
+    // floor expires, allow the same access token to mint a fresh ticket on a later request.
+    state.accessRefreshRequired = false;
+    state.refusedUntil = undefined;
+  }
   if (state.ticket && state.expiresAt && now < state.expiresAt - TICKET_REFRESH_LEAD_MS) {
     return { credential: state.ticket, usedTicket: true };
   }
   if (state.unmintableUntil && now < state.unmintableUntil) {
     return { credential: credential.accessToken, usedTicket: false };
   }
-
-  const body = JSON.stringify({ publicKey: identity.publicKeyBase64, deviceId: identity.deviceId });
-  const signed = signMirasimRequest({
-    method: "POST",
-    path: DEVICE_SESSION_PATH,
-    deviceId: identity.deviceId,
-    clientVersion: credential.metadata.clientVersion,
-    credential: credential.accessToken,
-    body: Buffer.from(body, "utf8"),
-    privateKeyPem: identity.privateKeyPem,
-  });
-  const executor = ctx.executor ?? globalThis.fetch;
-  const response = await executor(
-    `${credential.metadata.relayUrl.replace(/\/$/, "")}${DEVICE_SESSION_PATH}`,
-    {
-      method: "POST",
-      redirect: "manual",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${credential.accessToken}`,
-        ...lowercaseHeaders(signed.headers),
-      },
-      body,
-      signal: combineSignal(ctx.abortSignal, ctx.timeoutMs),
-    },
-  );
-
-  if (response.status === 404 || response.status === 501) {
-    try { await response.body?.cancel(); } catch { /* already closed */ }
-    ticketCache.set(key, {
-      unmintableUntil: now + (response.status === 404 ? TICKET_404_QUIET_MS : TICKET_501_QUIET_MS),
-    });
-    return { credential: credential.accessToken, usedTicket: false };
-  }
-  if (!response.ok) {
-    try { await response.body?.cancel(); } catch { /* already closed */ }
+  if (state.retryAt && now < state.retryAt) {
     if (state.ticket && state.expiresAt && now < state.expiresAt) {
       return { credential: state.ticket, usedTicket: true };
     }
-    throw new Error(`Mirasim device-session mint failed with HTTP ${response.status}`);
+    const retrySeconds = Math.max(1, Math.ceil((state.retryAt - now) / 1_000)).toString();
+    throw new MirasimRelayStatusError(state.lastStatus ?? 503, retrySeconds);
   }
+  if (state.mintFlight) return state.mintFlight;
 
-  const payload = await boundedControlJson(response);
-  const ticket = typeof payload.ticket === "string" ? payload.ticket.trim() : "";
-  if (!ticket || ticket.length > MAX_CONTROL_BODY || /[\r\n\0]/.test(ticket)) {
-    throw new Error("Mirasim device-session response contains an invalid ticket");
+  const generation = credential.generation;
+  const flight = (async (): Promise<TicketAuth> => {
+    const body = JSON.stringify({ publicKey: identity.publicKeyBase64, deviceId: identity.deviceId });
+    const signed = signMirasimRequest({
+      method: "POST",
+      path: DEVICE_SESSION_PATH,
+      deviceId: identity.deviceId,
+      clientVersion: credential.metadata.clientVersion,
+      credential: credential.accessToken,
+      body: Buffer.from(body, "utf8"),
+      privateKeyPem: identity.privateKeyPem,
+    });
+    const url = `${credential.metadata.relayUrl.replace(/\/$/, "")}${DEVICE_SESSION_PATH}`;
+    const providerExecutor = ctx.executor as (typeof globalThis.fetch & {
+      unoverriddenFetch?: typeof globalThis.fetch;
+    }) | undefined;
+    const physicalFetch = providerExecutor?.unoverriddenFetch;
+    const response = await send({
+      url,
+      budgetTargetKey: transportBudgetTargetKey(credential),
+      physicalFetch,
+      dispatch: executor => executor(url, {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          authorization: `Bearer ${credential.accessToken}`,
+          ...lowercaseHeaders(signed.headers),
+        },
+        body,
+        signal: combineSignal(ctx.abortSignal, ctx.timeoutMs),
+      }),
+    });
+
+    const observedAt = Date.now();
+    if (response.status === 404 || response.status === 501) {
+      try { await response.body?.cancel(); } catch { /* already closed */ }
+      if (state.generation === generation) {
+        state.ticket = undefined;
+        state.expiresAt = undefined;
+        state.retryAt = undefined;
+        state.failures = 0;
+        state.lastStatus = undefined;
+        state.unmintableUntil = observedAt
+          + (response.status === 404 ? TICKET_404_QUIET_MS : TICKET_501_QUIET_MS);
+      }
+      return { credential: credential.accessToken, usedTicket: false };
+    }
+    if (!response.ok) {
+      const status = response.status;
+      const retryAfter = response.headers.get("retry-after");
+      try { await response.body?.cancel(); } catch { /* already closed */ }
+      if (state.generation === generation) {
+        noteTicketFailure(
+          state,
+          status,
+          retryAfter,
+          status === 429 || status >= 500,
+          observedAt,
+        );
+      }
+      if (state.ticket && state.expiresAt && observedAt < state.expiresAt) {
+        return { credential: state.ticket, usedTicket: true };
+      }
+      throw new MirasimRelayStatusError(status, retryAfter);
+    }
+
+    const payload = await boundedControlJson(response, ctx.timeoutMs);
+    const ticket = typeof payload.ticket === "string" ? payload.ticket.trim() : "";
+    if (!ticket || ticket.length > MAX_CONTROL_BODY || /[\r\n\0]/.test(ticket)) {
+      if (state.generation === generation) {
+        noteTicketFailure(state, 502, null, false, observedAt);
+      }
+      throw new Error("Mirasim device-session response contains an invalid ticket");
+    }
+    const expiresAt = resolveTicketExpiry(observedAt, payload);
+    if (state.generation === generation) {
+      state.ticket = ticket;
+      state.expiresAt = expiresAt;
+      state.unmintableUntil = undefined;
+      state.retryAt = undefined;
+      state.failures = 0;
+      state.lastStatus = undefined;
+      state.accessRefreshRequired = false;
+    }
+    return { credential: ticket, usedTicket: true };
+  })();
+
+  state.mintFlight = flight;
+  try {
+    return await flight;
+  } finally {
+    if (state.mintFlight === flight) state.mintFlight = undefined;
   }
-  const expiresAt = resolveTicketExpiry(now, payload);
-  ticketCache.set(key, { ticket, expiresAt });
-  return { credential: ticket, usedTicket: true };
 }
 
 function cleanBaseHeaders(headers: Readonly<Record<string, string>>): {
@@ -261,18 +479,16 @@ function collectEnabled(): boolean {
   return value !== "0" && value !== "false" && value !== "off" && value !== "no";
 }
 
-function sessionId(cacheKey: string, accountIdentity: string, threadId: string | undefined): string {
+function sessionId(state: TicketState, accountIdentity: string, threadId: string | undefined): string {
   if (threadId) {
     return `mirasim_${createHash("sha256")
       .update(`${accountIdentity}\0${threadId}`)
       .digest("hex")
       .slice(0, 32)}`;
   }
-  const existing = sessionCache.get(cacheKey);
-  if (existing) return existing;
-  const created = `mirasim_${randomUUID()}`;
-  sessionCache.set(cacheKey, created);
-  return created;
+  if (state.sessionId) return state.sessionId;
+  state.sessionId = `mirasim_${randomUUID()}`;
+  return state.sessionId;
 }
 
 function inferenceMetadata(
@@ -281,9 +497,9 @@ function inferenceMetadata(
   requestPath: string,
   threadId?: string,
 ): Record<string, string> {
-  const key = ticketKey(credential, deviceId);
+  const { state } = transportStateFor(credential, deviceId);
   const metadata: Record<string, string> = {
-    "x-mirasim-session": sessionId(key, credential.accountIdentity, threadId),
+    "x-mirasim-session": sessionId(state, credential.accountIdentity, threadId),
     "x-mirasim-agent": requestPath.startsWith("/v1/responses") || requestPath.startsWith("/v1/alpha/search")
       ? "codex"
       : "claude",
@@ -304,6 +520,32 @@ function assertRelayTarget(url: URL, configuredRelayUrl: string): void {
   }
 }
 
+function invalidateTicket(
+  credential: StoredMirasimCredential,
+  deviceId: string,
+): TicketState {
+  const { state } = transportStateFor(credential, deviceId);
+  state.ticket = undefined;
+  state.expiresAt = undefined;
+  return state;
+}
+
+/**
+ * Mirrors the reference client's ticket-refusal floor. The first authenticated relay 401
+ * invalidates the device ticket. A second refusal within the floor is evidence that the
+ * account access credential, not only the ticket, must be refreshed by the outer OAuth owner.
+ */
+function noteTicketRefusal(
+  credential: StoredMirasimCredential,
+  deviceId: string,
+  now = Date.now(),
+): void {
+  const state = invalidateTicket(credential, deviceId);
+  state.accessRefreshRequired = true;
+  state.refusedUntil = now + TICKET_REFUSAL_FLOOR_MS;
+}
+
+
 async function buildPhysicalRequest(
   request: AdapterRequest,
   ctx: AdapterFetchContext,
@@ -311,18 +553,19 @@ async function buildPhysicalRequest(
   forceFreshTicket: boolean,
   controlPlane = false,
   controlCredentialMode: "device-ticket" | "access-token" = "device-ticket",
-): Promise<{ init: RequestInit; usedTicket: boolean; url: string }> {
+  send: PhysicalSend = createAdapterPhysicalSend(ctx),
+): Promise<{ budgetTargetKey: string; init: RequestInit; usedTicket: boolean; url: string }> {
   const target = new URL(request.url);
   assertRelayTarget(target, credential.metadata.relayUrl);
   const path = target.pathname;
   const identity = createMirasimDeviceIdentity(credential.metadata.devicePrivateKey);
   const clean = cleanBaseHeaders(request.headers);
   if (forceFreshTicket && controlCredentialMode === "device-ticket") {
-    ticketCache.delete(ticketKey(credential, identity.deviceId));
+    invalidateTicket(credential, identity.deviceId);
   }
   const auth = controlPlane && controlCredentialMode === "access-token"
     ? { credential: credential.accessToken, usedTicket: false }
-    : await mintDeviceTicket(credential, ctx);
+    : await mintDeviceTicket(credential, ctx, send);
   const metadata = controlPlane
     ? undefined
     : inferenceMetadata(credential, identity.deviceId, path, clean.threadId);
@@ -343,13 +586,14 @@ async function buildPhysicalRequest(
   const method = request.method.toUpperCase();
   return {
     url: target.toString(),
+    budgetTargetKey: transportBudgetTargetKey(credential),
     usedTicket: auth.usedTicket,
     init: {
       method: request.method,
       redirect: "manual",
       headers: { ...signedAndSealed, authorization: `Bearer ${auth.credential}` },
       ...(method === "GET" || method === "HEAD" ? {} : { body: request.body }),
-      signal: ctx.abortSignal,
+      signal: controlPlane ? combineSignal(ctx.abortSignal, ctx.timeoutMs) : ctx.abortSignal,
     },
   };
 }
@@ -425,11 +669,59 @@ function appendControlProviderHeaders(
   physical.init = { ...physical.init, headers };
 }
 
+async function fetchMirasimControlOnce(
+  providerName: string,
+  provider: OcxProviderConfig,
+  credential: StoredMirasimCredential,
+  path: string,
+  options: MirasimControlRequestOptions,
+): Promise<Response> {
+  const relayBase = credential.metadata.relayUrl.replace(/\/$/, "");
+  const normalizedPath = `/${path.trim().replace(/^\/+/, "")}`;
+  const executor = providerControlExecutor(providerName, provider, options.outboundDependencies);
+  const ctx: AdapterFetchContext = {
+    executor,
+    ...(options.signal ? { abortSignal: options.signal } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+  };
+  const send = createAdapterPhysicalSend(ctx);
+  const request: AdapterRequest = {
+    url: `${relayBase}${normalizedPath}`,
+    method: options.method ?? "GET",
+    headers: { accept: "application/json", ...(options.headers ?? {}) },
+    body: options.body ?? "",
+  };
+  const providerHeaders = validatedControlProviderHeaders(options.providerHeaders);
+  const credentialMode = options.credentialMode ?? "device-ticket";
+  const identity = createMirasimDeviceIdentity(credential.metadata.devicePrivateKey);
+  let physical = await buildPhysicalRequest(
+    request,
+    ctx,
+    credential,
+    false,
+    true,
+    credentialMode,
+    send,
+  );
+  appendControlProviderHeaders(physical, providerHeaders);
+  const budgetTargetKey = transportBudgetTargetKey(credential);
+  const response = await send({
+    url: physical.url,
+    budgetTargetKey,
+    dispatch: physicalExecutor => physicalExecutor(physical.url, physical.init),
+  });
+  if (response.status === 401 && physical.usedTicket) {
+    noteTicketRefusal(credential, identity.deviceId);
+  }
+  return response;
+}
+
 /**
  * Send a Mirasim control-plane request without inference metadata or the sealed
  * x-mirasim-enc envelope. Device-ticket authentication remains the default; endpoints whose
  * control-plane contract is tied to the login identity can opt into the access-token credential
- * while retaining device signing.
+ * while retaining device signing. One authenticated 401 may force-refresh the same account
+ * generation and replay once, matching the main inference path.
  */
 export async function fetchMirasimControl(
   providerName: string,
@@ -439,47 +731,57 @@ export async function fetchMirasimControl(
   options: MirasimControlRequestOptions = {},
 ): Promise<Response> {
   const credential = matchingCredential(accessToken);
-  const relayBase = credential.metadata.relayUrl.replace(/\/$/, "");
-  const normalizedPath = `/${path.trim().replace(/^\/+/, "")}`;
-  const executor = providerControlExecutor(providerName, provider, options.outboundDependencies);
-  const ctx: AdapterFetchContext = {
-    executor,
-    ...(options.signal ? { abortSignal: options.signal } : {}),
-    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-  };
-  const request: AdapterRequest = {
-    url: `${relayBase}${normalizedPath}`,
-    method: options.method ?? "GET",
-    headers: { accept: "application/json", ...(options.headers ?? {}) },
-    body: options.body ?? "",
-  };
-  const providerHeaders = validatedControlProviderHeaders(options.providerHeaders);
-  const credentialMode = options.credentialMode ?? "device-ticket";
-  let physical = await buildPhysicalRequest(
-    request,
-    ctx,
-    credential,
-    false,
-    true,
-    credentialMode,
-  );
-  appendControlProviderHeaders(physical, providerHeaders);
-  let response = await executor(physical.url, physical.init);
-  if (response.status !== 401 || !physical.usedTicket) return response;
+  let response: Response;
+  try {
+    response = await fetchMirasimControlOnce(providerName, provider, credential, path, options);
+  } catch (error) {
+    if (!(error instanceof MirasimRelayStatusError) || error.status !== 401) throw error;
+    response = statusErrorResponse(error);
+  }
+  if (response.status !== 401) return response;
 
-  const replacement = await buildPhysicalRequest(
-    request,
-    ctx,
-    credential,
-    true,
-    true,
-    credentialMode,
-  );
-  appendControlProviderHeaders(replacement, providerHeaders);
-  try { await response.body?.cancel(); } catch { /* already closed */ }
-  physical = replacement;
-  response = await executor(physical.url, physical.init);
-  return response;
+  try {
+    const { forceRefreshOAuthAccessSnapshot } = await import("../../oauth");
+    const refreshed = await forceRefreshOAuthAccessSnapshot({
+      provider: "mirasim",
+      accountId: credential.accountSlotId,
+      generation: credential.generation,
+      accessToken: credential.accessToken,
+    });
+    const replacement = await fetchMirasimControlOnce(
+      providerName,
+      provider,
+      matchingCredential(refreshed.accessToken),
+      path,
+      options,
+    );
+    try { await response.body?.cancel(); } catch { /* already closed */ }
+    return replacement;
+  } catch {
+    return response;
+  }
+}
+
+async function sendInferencePhysical(
+  send: PhysicalSend,
+  physical: Awaited<ReturnType<typeof buildPhysicalRequest>>,
+  ctx: AdapterFetchContext,
+  options: { sendClass?: AdapterFetchContext["sendClass"]; recovery?: AdapterFetchContext["recovery"] } = {},
+): Promise<Response> {
+  const deadline = responseHeaderDeadline(ctx.abortSignal, ctx.timeoutMs);
+  try {
+    return await send({
+      url: physical.url,
+      budgetTargetKey: physical.budgetTargetKey,
+      ...(options.sendClass ? { sendClass: options.sendClass } : {}),
+      ...(options.recovery ? { recovery: options.recovery } : {}),
+      dispatch: executor => executor(physical.url, { ...physical.init, signal: deadline.signal }),
+    });
+  } finally {
+    // Header deadline ends when fetch resolves. The returned body keeps only the caller's
+    // abort signal, so a long healthy SSE stream is not killed by the connect/header timeout.
+    deadline.clear();
+  }
 }
 
 export async function fetchMirasim(
@@ -488,38 +790,41 @@ export async function fetchMirasim(
   ctx: AdapterFetchContext = {},
 ): Promise<Response> {
   const credential = matchingCredential(accessToken);
+  const identity = createMirasimDeviceIdentity(credential.metadata.devicePrivateKey);
   const send = createAdapterPhysicalSend(ctx);
-  let physical = await buildPhysicalRequest(request, ctx, credential, false);
-  const response = await send({
-    url: physical.url,
-    dispatch: executor => executor(physical.url, physical.init),
-  });
-  if (response.status !== 401 || !physical.usedTicket) return response;
-
+  let physical: Awaited<ReturnType<typeof buildPhysicalRequest>>;
   try {
-    return await send({
-      url: physical.url,
-      sendClass: "auth-recovery",
-      recovery: "oauth-401",
-      beforeDispatch: async () => {
-        // Build the replacement first. If re-minting fails the original 401 remains readable
-        // rather than returning a Response whose body we already cancelled.
-        const replacement = await buildPhysicalRequest(request, ctx, credential, true);
-        try { await response.body?.cancel(); } catch { /* already closed */ }
-        physical = replacement;
-      },
-      dispatch: executor => executor(physical.url, physical.init),
-    });
+    physical = await buildPhysicalRequest(request, ctx, credential, false, false, "device-ticket", send);
   } catch (error) {
-    if (!response.bodyUsed) return response;
+    if (error instanceof MirasimRelayStatusError && error.status === 401) {
+      return statusErrorResponse(error);
+    }
     throw error;
   }
+
+  const response = await sendInferencePhysical(send, physical, ctx);
+  if (response.status === 401 && physical.usedTicket) {
+    // One relay rejection is enough to hand control back to the OAuth owner. A same-token
+    // ticket re-mint plus an OAuth replay would require six physical sends; OpenCodex's shared
+    // request budget intentionally caps the whole logical turn at four. Refreshing access first
+    // remints the ticket as part of the bounded replay and covers both stale-ticket and stale-token
+    // cases in exactly four sends (ticket + inference, refreshed ticket + inference).
+    noteTicketRefusal(credential, identity.deviceId);
+  }
+  return response;
+
 }
 
 export const MIRASIM_INTERNAL_WIRE_HEADER = INTERNAL_WIRE_HEADER;
 export const MIRASIM_INTERNAL_THREAD_HEADER = INTERNAL_THREAD_HEADER;
 
+/** Tests only: observe the stable no-thread session identity for a stored credential. */
+export function mirasimSessionIdForTests(accessToken: string): string | undefined {
+  const credential = matchingCredential(accessToken);
+  const identity = createMirasimDeviceIdentity(credential.metadata.devicePrivateKey);
+  return transportStateFor(credential, identity.deviceId).state.sessionId;
+}
+
 export function resetMirasimTransportStateForTests(): void {
-  ticketCache.clear();
-  sessionCache.clear();
+  transportStateCache.clear();
 }

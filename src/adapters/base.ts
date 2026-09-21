@@ -1,6 +1,6 @@
 import type { AdapterEvent, OcxParsedRequest } from "../types";
 import type { TranslatorBudget } from "../lib/translator-budget";
-import type { RequestExecutionBudget } from "../lib/request-execution-budget";
+import type { RequestExecutionBudget, SendClass } from "../lib/request-execution-budget";
 import type { AttemptRecoveryKind, AttemptRecoveryWithheld } from "../usage/log";
 import type { AdapterTierMetadata } from "../providers/fastwire";
 
@@ -195,6 +195,10 @@ export interface AdapterFetchContext {
    * adapter entry as one send is how a nested 3x3 ladder stayed invisible to a request cap.
    */
   sendBudget?: RequestExecutionBudget;
+  /** Default send class for the first physical send of an adapter-owned recovery leg. */
+  sendClass?: SendClass;
+  /** Default recovery label for physical sends that do not declare a narrower inner recovery. */
+  recovery?: AttemptRecoveryKind;
   /**
    * Observes every physical upstream send this adapter makes, including its own inner retries.
    *

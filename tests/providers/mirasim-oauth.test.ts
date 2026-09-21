@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { handleMirasimBrowserOAuthRequest, loginMirasim } from "../../src/oauth/mirasim";
+import {
+  handleMirasimBrowserOAuthRequest,
+  loginMirasim,
+  mirasimClientVersion,
+  mirasimRelayUrl,
+} from "../../src/oauth/mirasim";
 import { parseMirasimLoginOpts } from "../../src/oauth/login-cli";
 
 const originalFetch = globalThis.fetch;
@@ -72,6 +77,16 @@ function installBrowserAuthServer(calls: AuthCall[]): void {
 }
 
 describe("Mirasim OAuth/email login", () => {
+  test("rejects control characters in the runtime protocol version", () => {
+    const previous = process.env.MIRASIM_CLIENT_VERSION;
+    try {
+      process.env.MIRASIM_CLIENT_VERSION = "0.0.336\r\nInjected: yes";
+      expect(() => mirasimClientVersion()).toThrow("Invalid Mirasim client version");
+    } finally {
+      if (previous === undefined) delete process.env.MIRASIM_CLIENT_VERSION;
+      else process.env.MIRASIM_CLIENT_VERSION = previous;
+    }
+  });
   test("email login requests a code, prompts locally, and persists renewable credential material", async () => {
     const calls: AuthCall[] = [];
     installEmailAuthServer(calls);
@@ -135,10 +150,52 @@ describe("Mirasim OAuth/email login", () => {
       mirasimEmail: "user@example.com",
       mirasimCode: "123456",
     });
+    expect(parseMirasimLoginOpts([
+      "--email", "user@example.com",
+      "--code", "-",
+    ])).toEqual({
+      mirasimEmail: "user@example.com",
+      mirasimCode: "-",
+    });
     expect(() => parseMirasimLoginOpts(["--code", "123456"]))
       .toThrow("--code requires --email");
     expect(() => parseMirasimLoginOpts(["--wat"]))
       .toThrow("Unknown Mirasim login option");
+    const accidentalSecret = "654321-sensitive";
+    try {
+      parseMirasimLoginOpts([accidentalSecret]);
+      throw new Error("expected parser failure");
+    } catch (error) {
+      expect(String(error)).not.toContain(accidentalSecret);
+      expect(String(error)).toContain("position 1");
+    }
+  });
+
+  test("a malformed relay env is validated only when Mirasim config is resolved", () => {
+    const previous = process.env.MIRASIM_RELAY_URL;
+    process.env.MIRASIM_RELAY_URL = "http://example.com";
+    try {
+      expect(() => mirasimRelayUrl()).toThrow("must use HTTPS unless it is loopback");
+      const child = Bun.spawnSync({
+        cmd: [process.execPath, "-e", 'await import("./src/oauth/index.ts");'],
+        cwd: process.cwd(),
+        env: { ...process.env, MIRASIM_RELAY_URL: "http://example.com" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(child.exitCode, child.stderr.toString()).toBe(0);
+    } finally {
+      if (previous === undefined) delete process.env.MIRASIM_RELAY_URL;
+      else process.env.MIRASIM_RELAY_URL = previous;
+    }
+  });
+
+  test("malformed management callback paths terminate inside the OAuth namespace", async () => {
+    const response = await handleMirasimBrowserOAuthRequest(new Request(
+      "http://127.0.0.1:10100/oauth/mirasim/callback/abc?lang=zh-TW",
+    ));
+    expect(response?.status).toBe(400);
+    expect(await response!.text()).toContain("Mirasim 登入連結已過期");
   });
 
   test("management browser flow starts on a local provider chooser instead of silently preferring GitHub", async () => {

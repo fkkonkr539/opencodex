@@ -577,15 +577,20 @@ function normalizeCredential(cred: unknown): OAuthCredentials | null {
   }
   if (candidate.mirasim && typeof candidate.mirasim === "object") {
     const mirasim = candidate.mirasim;
-    const cleanMirasim = (value: unknown, max: number): string | undefined => {
+    const cleanMirasimScalar = (value: unknown, max: number): string | undefined => {
       if (typeof value !== "string") return undefined;
       const trimmed = value.trim();
-      return trimmed && trimmed.length <= max && !value.includes("\0") ? trimmed : undefined;
+      return trimmed && trimmed.length <= max && !/[\x00-\x1f\x7f]/.test(trimmed) ? trimmed : undefined;
     };
-    const devicePrivateKey = cleanMirasim(mirasim.devicePrivateKey, 16_384);
-    const relayUrl = cleanMirasim(mirasim.relayUrl, 2048);
-    const adminUrl = cleanMirasim(mirasim.adminUrl, 2048);
-    const clientVersion = cleanMirasim(mirasim.clientVersion, 128);
+    const cleanMirasimPem = (value: unknown, max: number): string | undefined => {
+      if (typeof value !== "string") return undefined;
+      const trimmed = value.trim();
+      return trimmed && trimmed.length <= max && !trimmed.includes("\0") ? trimmed : undefined;
+    };
+    const devicePrivateKey = cleanMirasimPem(mirasim.devicePrivateKey, 16_384);
+    const relayUrl = cleanMirasimScalar(mirasim.relayUrl, 2048);
+    const adminUrl = cleanMirasimScalar(mirasim.adminUrl, 2048);
+    const clientVersion = cleanMirasimScalar(mirasim.clientVersion, 128);
     // The private key is load-bearing. Metadata-only legacy/crafted rows are discarded.
     if (devicePrivateKey && relayUrl && adminUrl && clientVersion) {
       normalized.mirasim = { devicePrivateKey, relayUrl, adminUrl, clientVersion };

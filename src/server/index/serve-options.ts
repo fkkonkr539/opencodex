@@ -1481,13 +1481,7 @@ export function createServeOptions(ctx: ServeOptionsContext) {
           return withCors(anthropicErrorResponse(403, "cross-origin data-plane request blocked", "permission_error"), req, policy);
         }
         return runAdmittedHttpTurn(req, policy, async () => withCors(
-          await handleClaudeCountTokens(
-            req,
-            config,
-            policy,
-            { claudeIntercept: ingress === "claude-intercept" },
-            admission,
-          ),
+          await handleClaudeCountTokens(req, config, policy, { claudeIntercept: ingress === "claude-intercept" }, admission),
           req,
           policy,
         ));

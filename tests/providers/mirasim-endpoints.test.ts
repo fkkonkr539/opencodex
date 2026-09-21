@@ -237,6 +237,41 @@ describe("Mirasim auxiliary inference endpoints", () => {
     expect(count.headers.get("x-mirasim-agent")).toBeNull();
   });
 
+  test("Claude count_tokens applies the configured response-header deadline", async () => {
+    await saveCredential("mirasim", syntheticCredential());
+    const fakeFetch = (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+      if (path === "/v1/device/session") {
+        return new Response(JSON.stringify({ ticket: "mirasim-timeout-ticket", expiresIn: 600 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path !== "/v1/messages/count_tokens") return new Response("not found", { status: 404 });
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) return reject(signal.reason);
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }) as typeof fetch;
+    const config = mirasimConfig(fakeFetch);
+    config.connectTimeoutMs = 20;
+
+    const started = performance.now();
+    const response = await handleClaudeCountTokens(new Request("http://127.0.0.1/v1/messages/count_tokens", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "count this" }],
+      }),
+    }), config);
+
+    expect(response.status).toBe(502);
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(await response.text()).toContain("Mirasim count_tokens request timed out");
+  });
+
   test("alpha/search routes a Mirasim GPT model through the signed inference transport", async () => {
     await saveCredential("mirasim", syntheticCredential());
     const calls: Captured[] = [];

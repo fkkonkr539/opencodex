@@ -808,10 +808,12 @@ export async function handleResponsesCompact(
     // headers would run compaction on the wrong account (or 401) whenever a pool account is
     // active for this thread while normal turns succeed.
     let compactProvider = route.provider;
+    let mirasimSnapshot: OAuthAccessSnapshot | undefined;
     let headers = new Headers({ "content-type": "application/json" });
     if (compactProvider.adapter === "mirasim") {
       try {
         const snapshot = await getValidAccessTokenSnapshot(route.providerName);
+        mirasimSnapshot = snapshot;
         compactProvider = { ...compactProvider, apiKey: snapshot.accessToken };
       } catch (err) {
         if (err instanceof UnsupportedOAuthProviderError) {
@@ -1046,6 +1048,7 @@ export async function handleResponsesCompact(
           abortSignal: req.signal,
           timeoutMs: connectMs,
           sendBudget,
+          ...(recovery === "single" ? { sendClass: "auth-recovery" as const, recovery: "oauth-401" as const } : {}),
           executor: providerFetch(sendProvider, undefined, {
             providerName: route.providerName,
             modelId: route.modelId,
@@ -1137,6 +1140,32 @@ export async function handleResponsesCompact(
       compactHostAdmissionLease = null;
       recordCompactPoolOutcome(outcomeCtx, outcome);
       return formatErrorResponse(502, "upstream_error", "Failed to connect to compact upstream");
+    }
+
+    if (
+      upstream.status === 401
+      && compactProvider.adapter === "mirasim"
+      && mirasimSnapshot
+      && !req.signal.aborted
+    ) {
+      const rejected = upstream;
+      try {
+        const refreshed = await forceRefreshOAuthAccessSnapshot(mirasimSnapshot);
+        const refreshedProvider = { ...compactProvider, apiKey: refreshed.accessToken };
+        const replacement = await sendCompactAttempt(refreshedProvider, headers, "single", authCtx);
+        try { await rejected.body?.cancel(); } catch { /* already closed */ }
+        upstream = replacement;
+        compactProvider = refreshedProvider;
+        mirasimSnapshot = refreshed;
+      } catch (err) {
+        if (req.signal.aborted) {
+          return formatErrorResponse(499, "client_cancelled", "Client cancelled compact request");
+        }
+        const localRefusal = localDispatchRefusal(err);
+        if (localRefusal) return localRefusal;
+        // Preserve the relay's authenticated rejection when refresh or replay fails.
+        upstream = rejected;
+      }
     }
 
     if (

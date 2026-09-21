@@ -275,10 +275,10 @@ export function createMirasimAdapter(provider: OcxProviderConfig): ProviderAdapt
     async fetchResponse(request: AdapterRequest, ctx?: AdapterFetchContext): Promise<Response> {
       const wire = requestWire(request);
       const response = await fetchMirasim(request, provider.apiKey!, ctx);
-      // GPT Responses is delivered as native passthrough, so its private adapter marker would
-      // otherwise become a client-visible response header. Only the translated Anthropic path
-      // needs the marker so parseStream/parseResponse can choose its delegate.
-      return wire === "anthropic" ? markResponseWire(response, wire) : response;
+      // Both wires carry an internal marker because routed compaction deliberately leaves the
+      // native passthrough lane and re-enters the adapter parser. The public passthrough response
+      // boundary strips this private header before client delivery.
+      return markResponseWire(response, wire);
     },
 
     parseStream(

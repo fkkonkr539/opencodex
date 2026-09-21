@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { createMirasimDeviceIdentity } from "../adapters/mirasim/crypto";
+import { readBoundedResponseBytes } from "../lib/bounded-body";
 import type { MirasimOAuthMetadata, OAuthController, OAuthCredentials } from "./types";
 
 export const MIRASIM_RELAY_URL = "https://relay.mirasim.ai";
@@ -12,6 +13,23 @@ const AUTH_REQUEST_TIMEOUT_MS = 20_000;
 const PROFILE_REQUEST_TIMEOUT_MS = 5_000;
 const PROVIDER_SLUG = /^[a-z][a-z0-9_-]{0,63}$/;
 const EMAIL_ADDRESS = /^[^@\s]+@[^@\s.]+(?:\.[^@\s.]+)+$/;
+const OAUTH_ERROR_CODE = /^[a-z0-9][a-z0-9_.-]{0,63}$/i;
+
+export class MirasimTokenRefreshError extends Error {
+  readonly httpStatus: number;
+  readonly oauthError?: string;
+  readonly retryAfterMs?: number;
+  readonly retryable: boolean;
+
+  constructor(httpStatus: number, oauthError?: string, retryAfterMs?: number) {
+    super(`Mirasim token refresh failed with HTTP ${httpStatus}`);
+    this.name = "MirasimTokenRefreshError";
+    this.httpStatus = httpStatus;
+    this.oauthError = oauthError;
+    this.retryAfterMs = retryAfterMs;
+    this.retryable = httpStatus === 429 || httpStatus >= 500;
+  }
+}
 
 export interface MirasimLoginOptions {
   /** Management-owned browser origin used by the dashboard OAuth flow. */
@@ -187,13 +205,21 @@ export function mirasimAdminUrl(): string {
   );
 }
 
+export function mirasimClientVersion(): string {
+  const value = (process.env.MIRASIM_CLIENT_VERSION ?? MIRASIM_CLIENT_VERSION).trim();
+  if (!value || value.length > 128 || /[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error("Invalid Mirasim client version");
+  }
+  return value;
+}
+
 function defaultMirasimMetadata(existingPrivateKey?: string): MirasimOAuthMetadata {
   const identity = createMirasimDeviceIdentity(existingPrivateKey);
   return {
     devicePrivateKey: identity.privateKeyPem,
     relayUrl: mirasimRelayUrl(),
     adminUrl: mirasimAdminUrl(),
-    clientVersion: (process.env.MIRASIM_CLIENT_VERSION ?? MIRASIM_CLIENT_VERSION).trim() || MIRASIM_CLIENT_VERSION,
+    clientVersion: mirasimClientVersion(),
   };
 }
 
@@ -286,11 +312,15 @@ function profileSignal(parent?: AbortSignal): AbortSignal {
 
 async function boundedJson(response: Response): Promise<Record<string, unknown>> {
   const declared = Number(response.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > MAX_AUTH_BODY) throw new Error("Mirasim authentication response is too large");
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_AUTH_BODY) throw new Error("Mirasim authentication response is too large");
+  if (Number.isFinite(declared) && declared > MAX_AUTH_BODY) {
+    try { await response.body?.cancel(); } catch { /* already closed */ }
+    throw new Error("Mirasim authentication response is too large");
+  }
+  const bounded = await readBoundedResponseBytes(response, { maxBytes: MAX_AUTH_BODY });
+  if (bounded.oversized) throw new Error("Mirasim authentication response is too large");
   let parsed: unknown;
   try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bounded.bytes);
     parsed = JSON.parse(text);
   } catch {
     throw new Error("Mirasim authentication response is invalid JSON");
@@ -299,6 +329,38 @@ async function boundedJson(response: Response): Promise<Record<string, unknown>>
     throw new Error("Mirasim authentication response is invalid");
   }
   return parsed as Record<string, unknown>;
+}
+
+function safeOAuthCode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  return OAUTH_ERROR_CODE.test(normalized) ? normalized : undefined;
+}
+
+function safeOAuthErrorCode(payload: Record<string, unknown> | undefined): string | undefined {
+  if (!payload) return undefined;
+  for (const field of ["code", "type"]) {
+    const code = safeOAuthCode(payload[field]);
+    if (code) return code;
+  }
+  const nested = payload.error;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const record = nested as Record<string, unknown>;
+    for (const field of ["code", "type"]) {
+      const code = safeOAuthCode(record[field]);
+      if (code) return code;
+    }
+  }
+  return safeOAuthCode(payload.error);
+}
+
+function retryAfterMs(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.floor(seconds * 1_000);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return Math.max(0, timestamp - now);
 }
 
 function safeProfileEmail(value: unknown): string | undefined {
@@ -704,8 +766,8 @@ export async function handleMirasimBrowserOAuthRequest(
   url = new URL(req.url),
 ): Promise<Response | null> {
   const isStart = url.pathname === MIRASIM_BROWSER_START_PATH;
-  const isCallback = callbackTokenFromPath(url.pathname) !== undefined;
-  if (!isStart && !isCallback) {
+  const isCallbackNamespace = url.pathname.startsWith(MIRASIM_BROWSER_CALLBACK_PREFIX);
+  if (!isStart && !isCallbackNamespace) {
     return null;
   }
   const requestLocale = normalizeMirasimBrowserLocale(
@@ -972,6 +1034,7 @@ export async function refreshMirasimToken(
         ...priorMetadata,
         relayUrl: validatedServiceUrl(priorMetadata.relayUrl, "relay"),
         adminUrl: validatedServiceUrl(priorMetadata.adminUrl, "authentication service"),
+        clientVersion: mirasimClientVersion(),
       }
     : defaultMirasimMetadata();
 
@@ -983,8 +1046,19 @@ export async function refreshMirasimToken(
     signal: requestSignal(signal),
   });
   if (!response.ok) {
-    // The request body contains a long-lived secret. Do not reflect the upstream response body.
-    throw new Error(`Mirasim token refresh failed with HTTP ${response.status}`);
+    // The request body contains a long-lived secret. Read only a bounded, structured error code
+    // for terminal/transient classification; never reflect the provider payload in user output.
+    let errorPayload: Record<string, unknown> | undefined;
+    try {
+      errorPayload = await boundedJson(response);
+    } catch {
+      try { await response.body?.cancel(); } catch { /* already closed */ }
+    }
+    throw new MirasimTokenRefreshError(
+      response.status,
+      safeOAuthErrorCode(errorPayload),
+      retryAfterMs(response.headers.get("retry-after")),
+    );
   }
   const payload = await boundedJson(response);
   const accessToken = typeof payload.access_token === "string" ? payload.access_token : "";

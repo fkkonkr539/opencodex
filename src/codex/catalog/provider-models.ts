@@ -251,7 +251,13 @@ export async function fetchProviderModelsWithAuth(
     if (!apiKey) return observed(configured, "degraded");
     // The Mirasim catalog and signed roster are account/device-scoped. Keep cache authority
     // stable across access-token rotation without allowing another account/device to inherit it.
-    const authorityIdentity = mirasimCredentialCacheScope(apiKey);
+    // Ambiguous/crafted auth rows must degrade discovery, not fail the whole catalog gather.
+    let authorityIdentity: string;
+    try {
+      authorityIdentity = mirasimCredentialCacheScope(apiKey);
+    } catch {
+      return observed(configured, "degraded");
+    }
     const fresh = getFreshCached(name, ttlMs, Date.now(), authorityIdentity);
     if (fresh) {
       return observed(withConfiguredRetention(fresh), "authoritative");

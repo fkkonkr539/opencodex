@@ -115,10 +115,12 @@ export function loginUsageMessage(): string {
   return `Usage: ocx login <provider>\n`
     + `  Codex / ChatGPT: ocx login codex   (account pool, needs a running proxy; 'chatgpt' and\n`
     + `                   'openai' are the same route. An OpenAI platform key is 'openai-apikey'.)\n`
-    + `  Mirasim email: ocx login mirasim --email <address> [--code <code>]\n`
+    + `  Mirasim email: ocx login mirasim --email <address> [--code -]\n`
     + `  OAuth login:   ${listOAuthProviders().join(", ")}\n`
     + `  API-key login: ${Object.keys(KEY_LOGIN_PROVIDERS).join(", ")}`;
 }
+
+const MIRASIM_LOGIN_USAGE = "Usage: ocx login mirasim --email <address> [--code -]";
 
 export function parseMirasimLoginOpts(args: readonly string[]): LoginOpts | undefined {
   if (args.length === 0) return undefined;
@@ -128,17 +130,19 @@ export function parseMirasimLoginOpts(args: readonly string[]): LoginOpts | unde
     const arg = args[index]!;
     if (arg === "--email") {
       const value = args[++index]?.trim();
-      if (!value) throw new Error("Usage: ocx login mirasim --email <address> [--code <code>]");
+      if (!value) throw new Error(MIRASIM_LOGIN_USAGE);
       email = value;
       continue;
     }
     if (arg === "--code") {
       const value = args[++index]?.trim();
-      if (!value) throw new Error("Usage: ocx login mirasim --email <address> [--code <code>]");
+      if (!value) throw new Error(MIRASIM_LOGIN_USAGE);
       code = value;
       continue;
     }
-    throw new Error(`Unknown Mirasim login option: ${arg}`);
+    // A typo can be an email address or one-time code accidentally passed positionally.
+    // Never reflect the raw value into stderr/CI logs.
+    throw new Error(`Unknown Mirasim login option at position ${index + 1}. ${MIRASIM_LOGIN_USAGE}`);
   }
   if (!email) throw new Error("--code requires --email for Mirasim login");
   return {
@@ -179,6 +183,12 @@ export async function handleOAuthLogin(
   const launch = deps.openUrl ?? openUrl;
   const browser = createBrowserLaunchReport(deps.warn);
   await withPrompt(deps.ask, async (ask) => {
+    let effectiveOpts = opts;
+    if (name === "mirasim" && opts?.mirasimCode === "-") {
+      const code = (await ask("Enter the Mirasim sign-in code: ")).trim();
+      if (!code) throw new Error("Mirasim sign-in code cannot be empty");
+      effectiveOpts = { ...opts, mirasimCode: code };
+    }
     await login(name, {
       onAuth: ({ url, instructions }) => {
         console.log(`\n🔐 Opening browser for ${name} login...\n${url}\n`);
@@ -195,7 +205,7 @@ export async function handleOAuthLogin(
         await browser.settled();
         return await ask(prompt ?? "Paste redirect URL or code (or wait for browser): ");
       },
-    }, opts);
+    }, effectiveOpts);
   });
   // A device or polling provider never prompts, so nothing above waited on the launcher. It is
   // still owed an answer before this claims the login worked.
