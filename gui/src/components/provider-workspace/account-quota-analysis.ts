@@ -340,7 +340,7 @@ export function sortAccounts(
   const isGeminiFilter = activeFilter === "with_limits_gemini" || activeFilter === "gemini_exhausted";
   const isClaudeFilter = activeFilter === "with_limits_claude" || activeFilter === "claude_exhausted";
 
-  return [...items].sort((a, b) => {
+  return items.toSorted((a, b) => {
     switch (sortKey) {
       case "more_headroom": {
         if (isGeminiFilter) {

@@ -16,7 +16,7 @@ export function RemoveConfirmDialog({
 }) {
   const t = useT();
   return (
-    <div className="dialog-backdrop" onClick={onCancel}>
+    <div className="dialog-backdrop" onClick={onCancel} role="presentation">
       <div className="dialog" role="alertdialog" aria-label={t("pws.removeConfirmTitle")} onClick={e => e.stopPropagation()}>
         <h3>{t("pws.removeConfirmTitle")}</h3>
         <p>{defaultProviderName
@@ -41,7 +41,7 @@ export function UnsavedLeaveDialog({
 }) {
   const t = useT();
   return (
-    <div className="dialog-backdrop" onClick={onCancel}>
+    <div className="dialog-backdrop" onClick={onCancel} role="presentation">
       <div className="dialog" role="alertdialog" aria-label={t("pws.unsavedLeaveTitle")} onClick={e => e.stopPropagation()}>
         <h3>{t("pws.unsavedLeaveTitle")}</h3>
         <p>{t("pws.unsavedLeaveBody")}</p>
@@ -88,7 +88,7 @@ export function RemoveAccountConfirmDialog({
   }, [removing]);
 
   return (
-    <div className="dialog-backdrop" onClick={onCancel}>
+    <div className="dialog-backdrop" onClick={onCancel} role="presentation">
       <div className="dialog" role="alertdialog" aria-modal="true" aria-label={t("pws.removeAccountConfirmTitle")} onClick={e => e.stopPropagation()}>
         <h3>{t("pws.removeAccountConfirmTitle")}</h3>
         <p>
