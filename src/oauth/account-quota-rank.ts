@@ -150,7 +150,15 @@ export function accountResetTimestamp(
   const family = classifyModelFamilyForQuota(provider, requestedModelId);
   const windows = (quota.customWindows ?? []).filter(w => !family || windowMatchesFamily(w.label, family));
   const weekly = windows.find(w => /week/i.test(w.label));
-  const rawReset = weekly?.resetAt ?? quota.weeklyResetAt ?? windows[0]?.resetAt ?? quota.fiveHourResetAt;
+  let rawReset = weekly?.resetAt ?? quota.weeklyResetAt;
+  if (rawReset === undefined && provider !== "google-antigravity" && provider !== "anthropic") {
+    // Kept from agentHits/dev: prefer an explicitly 5h-labeled window for providers
+    // without a weekly cadence before falling back to first-window order.
+    const fiveHour = windows.find(w => /5h|five/i.test(w.label)) ?? windows[0];
+    rawReset = fiveHour?.resetAt ?? quota.fiveHourResetAt;
+  } else if (rawReset === undefined) {
+    rawReset = windows[0]?.resetAt ?? quota.fiveHourResetAt;
+  }
   if (typeof rawReset !== "number" || !Number.isFinite(rawReset)) return null;
   const ms = rawReset < 1e11 ? rawReset * 1000 : rawReset;
   return ms > now ? ms : null;

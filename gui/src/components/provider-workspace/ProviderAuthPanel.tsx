@@ -309,9 +309,8 @@ export default function ProviderAuthPanel({
 
   const showModelFamilies = item.name === "google-antigravity";
 
-  useEffect(() => {
-    if (showModelFamilies) return;
-    if (
+  const effectiveAccountFilter = useMemo(() => {
+    if (!showModelFamilies && (
       accountFilter === "with_limits_gemini"
       || accountFilter === "with_limits_claude"
       || accountFilter === "gemini_exhausted"

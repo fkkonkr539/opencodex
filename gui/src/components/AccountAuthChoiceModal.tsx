@@ -34,6 +34,17 @@ export default function AccountAuthChoiceModal({
     primary.current?.focus();
     return () => { if (previous?.isConnected && typeof previous.focus === "function") previous.focus(); };
   }, [isOpen]);
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
