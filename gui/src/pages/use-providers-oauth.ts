@@ -11,17 +11,13 @@ type AccountSet = { activeAccountId: string | null; accounts: OAuthAccount[] };
 
 export async function reconcileCancelledOAuthProvider(
   provider: string,
-  setAccountSets: React.Dispatch<React.SetStateAction<Record<string, AccountSet>>>,
+  _setAccountSets: React.Dispatch<React.SetStateAction<Record<string, AccountSet>>>,
   fetchAccountSets: (providers: string[]) => Promise<unknown>,
   fetchOauth: () => Promise<void>,
 ): Promise<void> {
-  // A cancelled/failed login can leave a row that was seeded by an earlier poll in React state.
-  // Clear it immediately, then let the authoritative roster repopulate it if the credential had
-  // actually committed before cancellation won the race.
-  setAccountSets(current => ({
-    ...current,
-    [provider]: { activeAccountId: null, accounts: [] },
-  }));
+  // Cancellation ends only the pending login transaction. Existing committed accounts remain
+  // authoritative until a successful backend read replaces them. Clearing optimistically here
+  // made a transient refresh failure hide real credentials from the UI.
   await Promise.allSettled([
     fetchAccountSets([provider]),
     fetchOauth(),

@@ -60,7 +60,7 @@ test("Mirasim account card renders one canonical row per quota window with human
   const { createRoot } = await import("react-dom/client");
   const account = {
     id: "account-example-5523",
-    email: "s***e@gmail.com",
+    email: "masked-mirasim-account",
     active: false,
     quotaMode: "probe",
     quota: {
@@ -91,9 +91,9 @@ test("Mirasim account card renders one canonical row per quota window with human
     );
   });
 
-  expect(host.querySelector(".pwi-auth-row-label")?.textContent).toBe("s***e@gmail.com");
+  expect(host.querySelector(".pwi-auth-row-label")?.textContent).toBe("masked-mirasim-account");
   const secondary = host.querySelector(".pwi-auth-row-secondary")?.textContent ?? "";
-  expect(secondary).not.toContain("s***e@gmail.com");
+  expect(secondary).not.toContain("masked-mirasim-account");
   expect(secondary).toContain("ID:");
 
   const quotaLabels = Array.from(host.querySelectorAll(".quota-stacked-limit"))

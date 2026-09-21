@@ -9,15 +9,15 @@ function tFor(locale: Locale): TFn {
 const CASES = [
   {
     locale: "en",
-    labels: ["5-hour limit", "Weekly limit", "Claude · Weekly limit", "Fable · Weekly limit"],
+    labels: ["5-hour limit", "Weekly limit", "Claude · Weekly limit", "Fable · Weekly limit", "Sonnet · Weekly limit"],
   },
   {
     locale: "zh-TW",
-    labels: ["5 小時限額", "每週限額", "Claude · 每週限額", "Fable · 每週限額"],
+    labels: ["5 小時限額", "每週限額", "Claude · 每週限額", "Fable · 每週限額", "Sonnet · 每週限額"],
   },
   {
     locale: "zh",
-    labels: ["5 小时限额", "每周限额", "Claude · 每周限额", "Fable · 每周限额"],
+    labels: ["5 小时限额", "每周限额", "Claude · 每周限额", "Fable · 每周限额", "Sonnet · 每周限额"],
   },
 ] as const satisfies readonly { locale: Locale; labels: readonly string[] }[];
 
@@ -31,6 +31,7 @@ for (const { locale, labels } of CASES) {
       customWindows: [
         { label: "Model · 7d_claude", percent: 0.5, resetAt: 1_900_000_000_000 },
         { label: "Model · 7d_fable", percent: 0, resetAt: 1_900_000_000_000 },
+        { label: "Model · 7d-sonnet", percent: 0.25, resetAt: 1_900_000_000_000 },
       ],
       updatedAt: Date.now(),
     }, null, tFor(locale));
