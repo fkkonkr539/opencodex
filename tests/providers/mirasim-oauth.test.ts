@@ -143,13 +143,10 @@ describe("Mirasim OAuth/email login", () => {
 
   test("CLI Mirasim email options map into the normal OAuth login transaction", () => {
     expect(parseMirasimLoginOpts([])).toBeUndefined();
-    expect(parseMirasimLoginOpts([
+    expect(() => parseMirasimLoginOpts([
       "--email", "user@example.com",
       "--code", "123456",
-    ])).toEqual({
-      mirasimEmail: "user@example.com",
-      mirasimCode: "123456",
-    });
+    ])).toThrow("Usage: ocx login mirasim");
     expect(parseMirasimLoginOpts([
       "--email", "user@example.com",
       "--code", "-",

@@ -58,6 +58,10 @@ function credential(options: {
   };
 }
 
+function bearerHeader(value: string): string {
+  return `Bearer ${value}`;
+}
+
 function mirasimConfig(fakeFetch: typeof fetch): OcxConfig {
   const entry = getProviderRegistryEntry("mirasim");
   if (!entry) throw new Error("missing Mirasim registry entry");
@@ -121,13 +125,13 @@ describe("Mirasim OAuth recovery", () => {
       if (path === "/v1/device/session") {
         sessionCalls += 1;
         const bearer = headers.get("authorization");
-        if (bearer === "Bearer mirasim-old-access") {
+        if (bearer === bearerHeader("mirasim-old-access")) {
           return new Response(JSON.stringify({ error: "expired access token" }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });
         }
-        expect(bearer).toBe("Bearer mirasim-new-access");
+        expect(bearer).toBe(bearerHeader("mirasim-new-access"));
         return new Response(JSON.stringify({ ticket: "mirasim-fresh-ticket", expiresIn: 600 }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -136,7 +140,7 @@ describe("Mirasim OAuth recovery", () => {
 
       if (path === "/v1/responses") {
         inferenceCalls += 1;
-        expect(headers.get("authorization")).toBe("Bearer mirasim-fresh-ticket");
+        expect(headers.get("authorization")).toBe(bearerHeader("mirasim-fresh-ticket"));
         const terminal = {
           type: "response.completed",
           response: {
@@ -210,9 +214,9 @@ describe("Mirasim OAuth recovery", () => {
       const bearer = new Headers(init?.headers).get("authorization");
       if (path === "/v1/device/session") {
         sessionCalls += 1;
-        const ticket = bearer === "Bearer mirasim-old-access" ? "old-ticket" : "new-ticket";
-        if (bearer !== "Bearer mirasim-old-access") {
-          expect(bearer).toBe("Bearer mirasim-inference-new-access");
+        const ticket = bearer === bearerHeader("mirasim-old-access") ? "old-ticket" : "new-ticket";
+        if (bearer !== bearerHeader("mirasim-old-access")) {
+          expect(bearer).toBe(bearerHeader("mirasim-inference-new-access"));
         }
         return new Response(JSON.stringify({ ticket, expiresIn: 600 }), {
           status: 200,
@@ -221,13 +225,13 @@ describe("Mirasim OAuth recovery", () => {
       }
       if (path === "/v1/responses") {
         inferenceCalls += 1;
-        if (bearer === "Bearer old-ticket") {
+        if (bearer === bearerHeader("old-ticket")) {
           return new Response(JSON.stringify({ error: "expired access token" }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });
         }
-        expect(bearer).toBe("Bearer new-ticket");
+        expect(bearer).toBe(bearerHeader("new-ticket"));
         const terminal = {
           type: "response.completed",
           response: {
@@ -292,13 +296,13 @@ describe("Mirasim OAuth recovery", () => {
       const bearer = new Headers(init?.headers).get("authorization");
       if (path === "/v1/device/session") {
         sessionCalls += 1;
-        if (bearer === "Bearer mirasim-old-access") {
+        if (bearer === bearerHeader("mirasim-old-access")) {
           return new Response(JSON.stringify({ ticket: "compact-old-ticket", expiresIn: 600 }), {
             status: 200,
             headers: { "content-type": "application/json" },
           });
         }
-        expect(bearer).toBe("Bearer mirasim-compact-new-access");
+        expect(bearer).toBe(bearerHeader("mirasim-compact-new-access"));
         return new Response(JSON.stringify({ ticket: "compact-new-ticket", expiresIn: 600 }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -306,13 +310,13 @@ describe("Mirasim OAuth recovery", () => {
       }
       if (path === "/v1/responses/compact") {
         compactCalls += 1;
-        if (bearer === "Bearer compact-old-ticket") {
+        if (bearer === bearerHeader("compact-old-ticket")) {
           return new Response(JSON.stringify({ error: "expired access token" }), {
             status: 401,
             headers: { "content-type": "application/json" },
           });
         }
-        expect(bearer).toBe("Bearer compact-new-ticket");
+        expect(bearer).toBe(bearerHeader("compact-new-ticket"));
         return new Response(JSON.stringify({ output: [{ type: "compaction", encrypted_content: "opaque" }] }), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -364,13 +368,13 @@ describe("Mirasim OAuth recovery", () => {
     const relayFetch = (async (_input: string | URL | Request, init?: RequestInit) => {
       controlCalls += 1;
       const bearer = new Headers(init?.headers).get("authorization");
-      if (bearer === "Bearer mirasim-old-access") {
+      if (bearer === bearerHeader("mirasim-old-access")) {
         return new Response(JSON.stringify({ error: "expired" }), {
           status: 401,
           headers: { "content-type": "application/json" },
         });
       }
-      expect(bearer).toBe("Bearer mirasim-control-new-access");
+      expect(bearer).toBe(bearerHeader("mirasim-control-new-access"));
       return new Response(JSON.stringify({ version: "1", agents: { claude: [], codex: [] } }), {
         status: 200,
         headers: { "content-type": "application/json" },

@@ -145,6 +145,9 @@ export function parseMirasimLoginOpts(args: readonly string[]): LoginOpts | unde
     throw new Error(`Unknown Mirasim login option at position ${index + 1}. ${MIRASIM_LOGIN_USAGE}`);
   }
   if (!email) throw new Error("--code requires --email for Mirasim login");
+  // Verification codes are short-lived secrets. CLI argv is visible to shell history and
+  // process inspection, so non-interactive input must come through stdin via "--code -".
+  if (code && code !== "-") throw new Error(MIRASIM_LOGIN_USAGE);
   return {
     mirasimEmail: email,
     ...(code ? { mirasimCode: code } : {}),
