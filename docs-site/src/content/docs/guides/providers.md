@@ -8,6 +8,8 @@ mode, and an optional model list. Providers live under `providers` in `~/.openco
 
 The dashboard's **Providers → Models** tab lists one provider's models, lets you add a custom model, and lets you hide or restore a model for that provider alone. The **Models** page controls an exact model ID across every provider that offers it, including providers added later. A global hide takes precedence over a provider's visible setting; restoring the global setting does not undo a provider-specific hide. Both settings affect catalog and picker visibility, not direct requests by exact model ID.
 
+![The Models page shows global visibility switches for sample providers](/screenshots/global-model-visibility.png)
+
 The dashboard provider Overview separates connection details, account usage and editable notes.
 Notes appear once, below the connection and authentication sections. Supported sponsor presets
 also show a short introduction, a Sponsor label and links to the provider's site or console.
