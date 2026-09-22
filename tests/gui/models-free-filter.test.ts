@@ -9,10 +9,13 @@ import {
 import { repoPath } from "../helpers/repo-root";
 
 /**
- * Regression coverage for #3666 — the Models page.
+ * Regression coverage for #3666 — the Dashboard half.
  *
- * The filter runs BEFORE search, enabled-first sort, and the page slice: applying
- * it afterwards would leave free models stranded behind Show more on a 200-row OpenRouter list.
+ * Both catalog surfaces (the Models page provider group and the provider workspace inventory)
+ * share one predicate so they cannot drift into disagreeing about what "free" means. The
+ * filter runs BEFORE each surface's own search, enabled-first sort, and page slice: applying
+ * it afterwards would leave free models stranded behind Show more on a 200-row OpenRouter
+ * list, which is exactly the case the issue reports.
  */
 function row(id: string, pricingStatus?: "free" | "paid"): ModelRow {
   return {
@@ -63,11 +66,15 @@ describe("Dashboard free-only model filter (#3666)", () => {
  * `sorted.slice(0, shown)` would keep every predicate case green while leaving free models
  * stranded behind Show more on a 200-row OpenRouter list — the exact symptom reported.
  *
- * The consumer is read as source because the ordering is a property of the pipeline, not of
- * any value the component returns.
+ * Both consumers are read as source because the ordering is a property of the pipeline, not of
+ * any value either component returns.
  */
 describe("free-only runs before the page slice (#3666)", () => {
   const modelsPage = readFileSync(repoPath("gui", "src", "pages", "Models.tsx"), "utf8");
+  const inventory = readFileSync(
+    repoPath("gui", "src", "components", "provider-workspace", "ProviderModels.tsx"),
+    "utf8",
+  );
 
   /** Index of one landmark, asserted present so a rename fails loudly instead of vacuously. */
   function at(source: string, needle: string): number {
@@ -86,6 +93,11 @@ describe("free-only runs before the page slice (#3666)", () => {
     expect(sort).toBeLessThan(slice);
   });
 
+  test("the provider inventory filters before its chip render cap", () => {
+    const filter = at(inventory, "filterFreeModelRows(visible, freeOnlyActive)");
+    const slice = at(inventory, "filtered.slice(0, CHIP_RENDER_CAP)");
+    expect(filter).toBeLessThan(slice);
+  });
 
   test("the group header counts the scoped set, not the whole provider", () => {
     // With Free only on, a header reading `rows.length` claims more models than the list under
@@ -106,19 +118,22 @@ describe("free-only runs before the page slice (#3666)", () => {
     expect(group).not.toContain('total: rows.length })');
   });
 
-  test("the page gates narrowing on the same condition that shows the switch", () => {
+  test("both surfaces gate the narrowing on the same condition that shows the switch", () => {
     // The switch renders under `pricingKnown`, but the operator's choice is component state that
     // outlives the rows it was made against. If the filter kept reading the raw flag, a refresh
     // that came back without pricing would hide the control and empty the list at the same time,
-    // leaving no way to undo it. The page must read the derived flag.
+    // leaving no way to undo it. Both consumers must read the derived flag.
     expect(modelsPage).toContain("const freeOnlyActive = freeOnlyInForce(freeOnlyOn, rows)");
     expect(modelsPage).not.toContain("filterFreeModelRows(rows, freeOnlyOn)");
+    expect(inventory).toContain("const freeOnlyActive = freeOnlyInForce(freeOnly, visible)");
+    expect(inventory).not.toContain("filterFreeModelRows(visible, freeOnly)");
   });
 
   test("the empty-state copy is bound to the same derived flag", () => {
     // `models.noFreeMatch` reads "turn off Free only". Printing it while the switch is hidden
     // tells the user to use a control that is not on screen.
     expect(modelsPage).toContain("{freeOnlyActive && scoped.length === 0 && rows.length > 0 && (");
+    expect(inventory).toContain('t(freeOnlyActive && priced.length === 0 ? "models.noFreeMatch"');
   });
 });
 

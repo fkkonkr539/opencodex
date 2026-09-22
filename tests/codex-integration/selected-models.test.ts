@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { filterCatalogVisibleModels, type CatalogModel } from "../../src/codex/catalog";
+import { effectiveDisabledModels } from "../../src/codex/catalog/model-visibility";
 import type { OcxConfig, OcxProviderConfig } from "../../src/types";
 
 function m(provider: string, id: string): CatalogModel {
@@ -46,6 +47,16 @@ describe("filterCatalogVisibleModels — per-provider allowlist", () => {
     const out = filterCatalogVisibleModels(big, cfg({ proxy: { selectedModels: ["model-7", "model-1999"] } }));
     expect(out.map(x => x.id).sort()).toEqual(["model-1999", "model-7"]);
   });
+});
+
+test("global model ID visibility covers every provider while local visibility stays scoped", () => {
+  const providers = cfg({ alpha: {}, beta: {}, gamma: {} }).providers;
+  const models = [m("alpha", "shared"), m("beta", "shared"), m("gamma", "shared"), m("beta", "other")];
+  const config = { providers, disabledModels: ["beta/other"], globalDisabledModelIds: ["shared"] };
+  expect(filterCatalogVisibleModels(models, config)).toEqual([]);
+  expect(effectiveDisabledModels(config)).toEqual(new Set(["beta/other", "shared", "alpha/shared", "beta/shared", "gamma/shared"]));
+  config.globalDisabledModelIds = [];
+  expect(filterCatalogVisibleModels(models, config)).toEqual(models.slice(0, 3));
 });
 
 describe("filterCatalogVisibleModels — slash-bearing ids", () => {

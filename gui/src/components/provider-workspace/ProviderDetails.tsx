@@ -1,6 +1,6 @@
 /**
  * ProviderDetails — the detail header + tab shell (WP090+091). Owns tab state
- * and composes the Overview/Usage/Settings panels.
+ * and composes the Overview/Models/Usage/Settings panels.
  */
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useT } from "../../i18n/shared";
@@ -14,6 +14,8 @@ import { Switch } from "../../ui";
 import { IconChevron, IconTrash } from "../../icons";
 import ProviderOverview from "./ProviderOverview";
 import type { CatalogPreset } from "../provider-catalog/provider-presets";
+import type { ModelRow } from "../../pages/models-shared";
+import ProviderModels from "./ProviderModels";
 import ProviderUsage from "./ProviderUsage";
 import ProviderAuthPanel from "./ProviderAuthPanel";
 import type { CodexAccountPoolController } from "../../hooks/useCodexAccountPool";
@@ -22,7 +24,7 @@ import { UnsavedLeaveDialog } from "./ProviderDialogs";
 import type { ProviderQuotaReportView } from "../../provider-workspace/report";
 import type { AccountLoadState, ProviderModelUsageRow, ProviderUsageTotals, OAuthAccountRow, ApiKeyRow, LoginHint, ProviderAuthHandlers, ProviderUpdatePatch, ProviderUpdateResult } from "./types";
 
-type Tab = "overview" | "usage" | "accounts" | "settings";
+type Tab = "overview" | "models" | "usage" | "accounts" | "settings";
 
 export default function ProviderDetails({
   item,
@@ -31,7 +33,15 @@ export default function ProviderDetails({
   modelUsage,
   quotaReport,
   availableModels,
+  hasLiveModels,
+  selectedModels,
+  modelRows,
+  modelRevision,
+  modelRowsReady,
   onOpenModels,
+  modelsLoading,
+  modelsLoadFailed,
+  onRetryModels,
   oauthEmail,
   onDeselect,
   apiBase,
@@ -60,7 +70,16 @@ export default function ProviderDetails({
   modelUsage?: ProviderModelUsageRow[];
   quotaReport?: ProviderQuotaReportView;
   availableModels: string[];
+  /** Server-reported live-catalog provenance; see filterModels(). */
+  hasLiveModels: boolean;
+  selectedModels: string[];
+  modelRows: ModelRow[] | null;
+  modelRevision: string;
+  modelRowsReady: boolean;
   onOpenModels: () => void;
+  modelsLoading?: boolean;
+  modelsLoadFailed?: boolean;
+  onRetryModels?: () => void;
   oauthEmail?: string;
   onDeselect: () => void;
   apiBase: string;
@@ -118,6 +137,7 @@ export default function ProviderDetails({
   ]);
   const tabs = useMemo<{ id: Tab; label: string }[]>(() => [
     { id: "overview", label: t("pws.tab.overview") },
+    { id: "models", label: t("pws.tab.models") },
     { id: "usage", label: t("pws.tab.usage") },
     ...(authSurface ? [{ id: "accounts" as const, label: authSurface === "api-keys" ? t("pws.apiKeys") : t("pws.tab.accounts") }] : []),
     { id: "settings", label: t("pws.tab.settings") },
@@ -190,7 +210,6 @@ export default function ProviderDetails({
           </h2>
         </div>
         <div className="pws-detail-actions">
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onOpenModels}>{t("prov.modelsNoticeOpen")}</button>
           {!isDefault && !isDisabled && onSetDefault && (
             <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSetDefault(item.name)}>
               {t("prov.setDefault")}
@@ -277,6 +296,28 @@ export default function ProviderDetails({
                   }
                 : undefined
             }
+          />
+        )}
+        {tab === "models" && (
+          <ProviderModels
+            key={item.name}
+            item={item}
+            apiBase={apiBase}
+            availableModels={availableModels}
+            hasLiveModels={hasLiveModels}
+            selectedModels={selectedModels}
+            modelRows={modelRows}
+            modelRevision={modelRevision}
+            modelRowsReady={modelRowsReady}
+            onOpenModels={onOpenModels}
+            modelsLoading={modelsLoading}
+            modelsLoadFailed={modelsLoadFailed}
+            needsReauth={
+              (accounts ?? []).some(account => account.active && account.needsReauth)
+              || oauth?.needsReauth === true
+            }
+            onRetryModels={onRetryModels}
+            onOpenAccounts={authSurface ? () => switchTab("accounts") : undefined}
           />
         )}
         {tab === "usage" && (

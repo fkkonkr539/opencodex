@@ -263,9 +263,10 @@ export function mergeConfiguredModelsIntoLiveCatalog(opts: {
 
 export function filterCatalogVisibleModels(
   models: CatalogModel[],
-  config: Pick<OcxConfig, "disabledModels" | "providers">,
+  config: Pick<OcxConfig, "disabledModels" | "globalDisabledModelIds" | "providers">,
 ): CatalogModel[] {
   const disabled = new Set(config.disabledModels ?? []);
+  const globalDisabled = new Set(Array.isArray(config.globalDisabledModelIds) ? config.globalDisabledModelIds : []);
   const allowByProvider = new Map<string, Set<string>>();
   for (const [name, prov] of Object.entries(config.providers)) {
     const sel = prov.selectedModels;
@@ -289,6 +290,7 @@ export function filterCatalogVisibleModels(
     }
   }
   return models.filter(m => {
+    if (globalDisabled.has(m.id)) return false;
     if (initialModelSelectionPending(config.providers[m.provider])) return false;
     if (config.providers[m.provider]?.disabled === true) return false;
     const nativeAlias = m.provider === COMBO_NAMESPACE && m.nativeAlias === true;
@@ -302,4 +304,17 @@ export function filterCatalogVisibleModels(
     const allow = allowByProvider.get(m.provider);
     return !allow || allow.has(slugEquivalenceKey(routedSlug(m.provider, m.id)));
   });
+}
+
+/** Expand exact global model IDs into every configured provider namespace for catalog merging. */
+export function effectiveDisabledModels(config: Pick<OcxConfig, "disabledModels" | "globalDisabledModelIds" | "providers">): Set<string> {
+  const disabled = new Set(config.disabledModels ?? []);
+  for (const id of Array.isArray(config.globalDisabledModelIds) ? config.globalDisabledModelIds : []) {
+    if (typeof id !== "string" || !id.trim()) continue;
+    // Bare native GPT ids have no slash. A slash-bearing upstream id must never be
+    // mistaken for a provider-qualified selector here.
+    if (!id.includes("/")) disabled.add(id);
+    for (const provider of Object.keys(config.providers)) disabled.add(routedSlug(provider, id));
+  }
+  return disabled;
 }

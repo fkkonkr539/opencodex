@@ -6,7 +6,7 @@ description: Every way opencodex authenticates and talks to an LLM provider — 
 A **provider** is one upstream LLM endpoint plus how to reach it: an adapter, a base URL, an auth
 mode, and an optional model list. Providers live under `providers` in `~/.opencodex/config.json`.
 
-The dashboard keeps one model inventory on the **Models** page. From a provider's details, choose **Open Models** to see that provider's models, add a custom model, or control which models appear in Codex's picker. Provider connection, account, usage, and settings controls remain on the **Providers** page. Hiding a model does not disable its provider or prevent a direct request by exact model ID.
+The dashboard's **Providers → Models** tab lists one provider's models, lets you add a custom model, and lets you hide or restore a model for that provider alone. The **Models** page controls an exact model ID across every provider that offers it, including providers added later. A global hide takes precedence over a provider's visible setting; restoring the global setting does not undo a provider-specific hide. Both settings affect catalog and picker visibility, not direct requests by exact model ID.
 
 The dashboard provider Overview separates connection details, account usage and editable notes.
 Notes appear once, below the connection and authentication sections. Supported sponsor presets
