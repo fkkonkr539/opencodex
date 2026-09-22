@@ -306,15 +306,4 @@ export function filterCatalogVisibleModels(
   });
 }
 
-/** Expand exact global model IDs into every configured provider namespace for catalog merging. */
-export function effectiveDisabledModels(config: Pick<OcxConfig, "disabledModels" | "globalDisabledModelIds" | "providers">): Set<string> {
-  const disabled = new Set(config.disabledModels ?? []);
-  for (const id of Array.isArray(config.globalDisabledModelIds) ? config.globalDisabledModelIds : []) {
-    if (typeof id !== "string" || !id.trim()) continue;
-    // Bare native GPT ids have no slash. A slash-bearing upstream id must never be
-    // mistaken for a provider-qualified selector here.
-    if (!id.includes("/")) disabled.add(id);
-    for (const provider of Object.keys(config.providers)) disabled.add(routedSlug(provider, id));
-  }
-  return disabled;
-}
+export { effectiveDisabledModels } from "./metadata";
