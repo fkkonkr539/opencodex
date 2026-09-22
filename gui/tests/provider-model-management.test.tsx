@@ -373,6 +373,8 @@ test("rail counts inventory before search/cap and routed selection does not badg
   rows.push(row("hidden", { disabled: true })); selected = { vendor: ["model-304"] };
   available = { vendor: rows.map(value => value.id) };
   await mount(); await waitFor(() => ids().length === 300);
+  expect(host.textContent).toContain("305 of 306 listed");
+  expect(host.textContent).toContain("Models shows the full inventory");
   const vendorOptions = host.querySelectorAll('[role="option"][title="Vendor"]');
   expect(vendorOptions).toHaveLength(1);
   const rail = vendorOptions[0]!;

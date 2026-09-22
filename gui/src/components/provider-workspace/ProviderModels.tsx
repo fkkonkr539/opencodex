@@ -241,8 +241,9 @@ function ProviderModelInventory({ item, apiBase, availableModels, selectedModels
     <div className="pws-section">
       <div className="pws-section-head">
         <h3 className="pws-section-title">{t("pws.tab.models")}</h3>
-        {modelRows !== null && <span className="muted">{t("pws.modelsAvailable", { count: visible.length })}</span>}
+        {modelRows !== null && <span className="muted">{t("pws.modelsListed", { visible: visible.length, total: rows.length })}</span>}
       </div>
+      <p className="muted text-label">{t("pws.modelsRelationship")}</p>
       <div className="row">
         <button ref={recoveryRef} type="button" className="btn btn-ghost btn-sm" onClick={onOpenModels}>{t("pws.manageModelVisibility")}</button>
       </div>

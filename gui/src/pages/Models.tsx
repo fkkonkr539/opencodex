@@ -40,6 +40,7 @@ import {
   selectModelsTab,
   type ModelsTab,
 } from "./models-tab";
+import { useModelsProviderSelection } from "./use-models-provider-selection";
 import {
   buildProviderModelGroups,
   type ConfiguredProviderSummary,
@@ -439,7 +440,7 @@ export default function Models({ apiBase, restartEpoch = 0, connected = false, c
   const [shadowCallSaving, setShadowCallSaving] = useState(false);
 
   // App owns the in-session view mode; fallback to persisted mode for isolated renders/tests.
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
+  const { selectedProvider, setSelectedProvider, selectProvider } = useModelsProviderSelection();
 
   useEffect(() => () => {
     if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
@@ -2567,7 +2568,7 @@ export default function Models({ apiBase, restartEpoch = 0, connected = false, c
             <button
               type="button"
               className={`models-workspace-rail-row${selectedProvider === null ? " models-workspace-rail-row--selected" : ""}`}
-              onClick={() => setSelectedProvider(null)}
+              onClick={() => selectProvider(null)}
               aria-current={selectedProvider === null ? "true" : undefined}
             >
               <span className="models-workspace-rail-name">{t("models.workspace.allProviders")}</span>
@@ -2588,7 +2589,7 @@ export default function Models({ apiBase, restartEpoch = 0, connected = false, c
                   key={provider}
                   type="button"
                   className={`models-workspace-rail-row${selectedProvider === provider ? " models-workspace-rail-row--selected" : ""}`}
-                  onClick={() => setSelectedProvider(provider)}
+                  onClick={() => selectProvider(provider)}
                   aria-current={selectedProvider === provider ? "true" : undefined}
                 >
                   <span className="models-workspace-rail-name">{formatProviderDisplayName(provider, t)}</span>
