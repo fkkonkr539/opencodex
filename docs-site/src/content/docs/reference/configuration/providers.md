@@ -538,6 +538,39 @@ cleared or unresolved. The persisted catalog field is read by Codex for the curr
 model, which is why a valid configured selector is copied to each applicable entry.
 Provider-scoped selectors (above) are applied before this root fallback and win on routed rows.
 
+### Response service-tier authority
+
+Set `providers.<name>.responseTierAuthoritative` to `false` in `config.json` when that
+provider's response `service_tier` cannot establish whether Fast was granted. This is an
+operator declaration about the entire provider route, independent of `supportsServiceTier` and
+`fastWire`. It neither enables Fast nor changes the outgoing `service_tier`.
+
+For example, add this field to an existing gateway provider whose Codex backend has
+non-authoritative response metadata:
+
+```json
+{ "responseTierAuthoritative": false }
+```
+
+For an eligible request serialized as `priority`, both a `default` and a `priority` echo remain
+observations. Logs preserve `responseServiceTier` and record
+`tierOutcome.responseTierAuthoritative: false`, `fastOutcome: "applied"`, and
+`confirmation: "assumed"`, without `response-declined`. Here **applied means the request parameter
+was sent**, and **assumed means the actual Fast effect is unconfirmed**. The model tooltip shows
+the request and raw response separately with that confirmation. Neither this setting nor these
+records prove an acceleration or a billed tier.
+
+Cost estimates use the existing requested-tier fallback instead of treating the raw echo as a
+confirmed price tier; pricing rules requiring response confirmation cannot use that echo. Historical records
+without an authority flag retain their previous interpretation.
+
+The field accepts only booleans. Omission and explicit `true` retain response-based confirmation
+for other destinations, including the official API and undeclared gateways. Canonical
+`https://chatgpt.com/backend-api/codex` with `authMode: "forward"` remains automatically
+non-authoritative, even if `true` is configured. Gateway names and URLs are never inferred.
+If one gateway mixes response contracts, use separate provider entries for those routes and
+apply the declaration only to the relevant entry.
+
 ### FastWire B1 capability migration
 
 Fast capability and arbitrary Chat caller-tier forwarding are independent after FastWire B1. The

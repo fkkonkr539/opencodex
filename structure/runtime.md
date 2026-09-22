@@ -2,6 +2,9 @@
 
 ## Resolved static model policy
 
+Fast response observation follows the [response-tier authority contract](transports/responses.md#response-tier-observation-authority),
+including its per-attempt persistence and requested-tier cost provenance; outbound Fast policy is unchanged.
+
 `src/router.ts` attaches one frozen `ResolvedModelPolicy` to every `RouteResult`. Policy/combo
 route spreads retain that object. Every initial, fallback, and recovery route is recaptured for the
 request's original inbound protocol before route-dependent normalization, and all adapter rebuilds

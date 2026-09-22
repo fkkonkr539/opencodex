@@ -126,6 +126,12 @@ echo `default`, so request logs show the response tier as an observation with co
 `assumed`. For latency-sensitive work, compare observed first-output times across the providers you
 actually use rather than assuming any particular channel is faster.
 
+For a gateway forwarding to a backend with the same metadata limitation, explicitly declare
+[`responseTierAuthoritative: false`](../reference/configuration/providers.md#response-service-tier-authority)
+on that provider. The request still sends priority and records the raw echo, while actual Fast
+scheduling remains unconfirmed. Undeclared gateways and the official API keep their existing
+response-based interpretation.
+
 The proxy listens on port `10100` by default and serves `POST /v1/responses`,
 `POST /v1/responses/compact`, `POST /v1/images/generations`, `POST /v1/images/edits`,
 `GET /v1/models`, `GET /healthz`, and the `/api/*` management surface.

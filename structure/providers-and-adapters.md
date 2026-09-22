@@ -85,6 +85,10 @@ Adapter output must stay in internal `AdapterEvent` form until `src/bridge/sse.t
 to Responses SSE or WebSocket frames, or `src/bridge/response-json.ts` buffers it into a JSON
 response. `src/bridge.ts` is the compatibility facade that re-exports both.
 
+Fast response evidence follows the [response-tier observation contract](transports/responses.md#response-tier-observation-authority):
+an explicit provider declaration can mark an intermediary's echo non-authoritative without
+changing its capability or adapter wire mapping.
+
 The image/video loop bounds each hidden iteration before replay or fulfillment; see
 [media iteration retention](transports/inventory.md#media-iteration-retention).
 

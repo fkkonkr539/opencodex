@@ -957,6 +957,7 @@ const PROVIDER_CONFIG_FIELD_POLICY = {
   modelAdapters: "editor",
   fastWire: "editor",
   fastEnabled: "editor",
+  responseTierAuthoritative: "editor",
   baseUrl: "editor",
   responsesPath: "editor",
   chatCompletionsPath: "editor",
