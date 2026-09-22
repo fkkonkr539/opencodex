@@ -730,7 +730,7 @@ export const en = {
   "pws.modelSavedRefreshPending": "Definition saved, but the model catalog could not be refreshed. Retry the refresh; do not add it again.",
   "pws.modelMutationUnconfirmed": "The change could not be confirmed. Refresh the models before trying again.",
   "pws.modelRemovedRefreshPending": "The change was saved, but the model catalog could not be refreshed. Retry the refresh.",
-  "pws.modelHidden": "Model hidden. Restore visibility in Models.",
+  "pws.modelHidden": "Hidden for this provider. Show it again from the hidden list below.",
   "pws.modelDefinitionDeleted": "Custom definition deleted. An underlying model may still appear.",
   "pws.modelKnown": "This model is already known. Manage its visibility in Models.",
   "models.customAdded": "Custom model added",

@@ -239,6 +239,22 @@ test("provider restore keeps a global hide and a local hide stays scoped", async
   expect(host.textContent).toContain("Hidden across providers");
 });
 
+test("provider bulk All off / All on writes one provider-scoped rule and leaves global hides alone", async () => {
+  rows = [row("a"), row("b"), row("shared", { disabled: true, localDisabled: false, globalDisabled: true })];
+  await mount(); await current();
+  const bulk = (label: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!;
+  expect(bulk("All on").disabled).toBe(true);
+  await click(bulk("All off"));
+  await waitFor(() => requests.length === 1); await current();
+  expect(requests[0]).toMatchObject({ path: "/api/model-visibility", method: "PUT",
+    body: { scope: "provider", provider: "vendor", enabled: false, targets: [{ id: "a" }, { id: "b" }, { id: "shared" }] } });
+  expect(host.querySelectorAll(".pws-hidden-models code")).toHaveLength(3);
+  await click(bulk("All on"));
+  await waitFor(() => requests.length === 2); await current();
+  expect(requests[1]).toMatchObject({ body: { scope: "provider", provider: "vendor", enabled: true } });
+  expect(rows.find(value => value.id === "shared")).toMatchObject({ localDisabled: false, globalDisabled: true, disabled: true });
+});
+
 test("same-label custom and account-native rows keep disjoint Delete/Hide identities", async () => {
   const id = "account-work/gpt-5.5";
   const nativeSelector = id;

@@ -726,7 +726,7 @@ export const tr: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "Tanım kaydedildi ancak model kataloğu yenilenemedi. Yenilemeyi tekrar deneyin; modeli yeniden eklemeyin.",
   "pws.modelMutationUnconfirmed": "Değişiklik doğrulanamadı. Yeniden denemeden önce modelleri yenileyin.",
   "pws.modelRemovedRefreshPending": "Değişiklik kaydedildi ancak model kataloğu yenilenemedi. Yenilemeyi tekrar deneyin.",
-  "pws.modelHidden": "Model gizlendi. Modeller bölümünden yeniden görünür yapabilirsiniz.",
+  "pws.modelHidden": "Bu sağlayıcıda gizlendi. Aşağıdaki gizli listeden yeniden gösterebilirsiniz.",
   "pws.modelDefinitionDeleted": "Özel tanım silindi. Alttaki model görünmeye devam edebilir.",
   "pws.modelKnown": "Bu model zaten biliniyor. Görünürlüğünü Modeller bölümünde yönetin.",
   "models.customDeleteConfirm": "{name} için özel tanım silinsin mi? Alttaki yerel veya keşfedilmiş model yeniden görünebilir.",

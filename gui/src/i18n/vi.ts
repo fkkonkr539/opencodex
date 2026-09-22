@@ -715,7 +715,7 @@ export const vi: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "Đã lưu định nghĩa, nhưng không thể làm mới danh mục model (model catalog). Hãy thử làm mới lại; đừng thêm lại model đó.",
   "pws.modelMutationUnconfirmed": "Không thể xác nhận thay đổi. Hãy làm mới danh sách model trước khi thử lại.",
   "pws.modelRemovedRefreshPending": "Thay đổi đã được lưu, nhưng không thể làm mới danh mục model. Hãy thử làm mới lại.",
-  "pws.modelHidden": "Model đã ẩn. Khôi phục hiển thị trong Models.",
+  "pws.modelHidden": "Đã ẩn cho nhà cung cấp này. Hiển thị lại từ danh sách đã ẩn bên dưới.",
   "pws.modelDefinitionDeleted": "Định nghĩa tuỳ chỉnh đã bị xoá. Một model cơ sở (underlying model) vẫn có thể xuất hiện.",
   "pws.modelKnown": "Model này đã được nhận diện. Quản lý hiển thị của nó trong Models.",
   "models.customAdded": "Đã thêm model tuỳ chỉnh",

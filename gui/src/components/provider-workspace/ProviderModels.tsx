@@ -229,25 +229,27 @@ function ProviderModelInventory({ item, apiBase, availableModels, selectedModels
     finally { bounded.clear(); finish(result); }
   };
 
-  const showModel = async (row: ModelRow) => {
-    if (actionsBlocked || flight.current) return;
+  // Provider-scoped writes only: the Models page owns the cross-provider rule for a model ID.
+  const writeVisibility = async (scope: "models" | "provider", targets: ModelRow[], enabled: boolean) => {
+    if (actionsBlocked || flight.current || targets.length === 0) return;
     flight.current = true;
     setRequestPending(true);
     setMutation(null);
     const bounded = createBoundedFetch(60_000);
     let result: Omit<Mutation, "revision"> = { outcome: "unconfirmed", refreshPending: false };
     try {
-      const response = await putModelVisibility(apiBase, "models", row.provider, [{ id: row.id, native: row.native === true }], true,
+      const response = await putModelVisibility(apiBase, scope, item.name, targets.map(row => ({ id: row.id, native: row.native === true })), enabled,
         (input, init) => fetch(input, { ...init, signal: bounded.signal }));
       if (response.ok) {
         const body = await readJsonOrThrow<unknown>(response);
         if (body && typeof body === "object" && !Array.isArray(body) && "ok" in body && body.ok === true) {
-          result = { outcome: "shown", refreshPending: catalogRefreshPending(body) };
+          result = { outcome: enabled ? "shown" : "hidden", refreshPending: catalogRefreshPending(body) };
         }
       } else if (response.status >= 400 && response.status < 500) result = { outcome: "rejected", refreshPending: false };
     } catch { /* Re-read after an uncertain acknowledgement. */ }
     finally { bounded.clear(); finish(result); }
   };
+  const showModel = (row: ModelRow) => writeVisibility("models", [row], true);
 
   const savedHidden = mutation?.created && reconciled && rows.some(row => row.customId === mutation.created?.id && row.disabled);
   const refreshFailed = mutation && (mutation.refreshPending || modelsLoadFailed || ownershipError === ownershipKey);
@@ -267,6 +269,10 @@ function ProviderModelInventory({ item, apiBase, availableModels, selectedModels
       <p className="muted text-label">{t("pws.modelsRelationship")}</p>
       <div className="row">
         <button ref={recoveryRef} type="button" className="btn btn-ghost btn-sm" onClick={onOpenModels}>{t("pws.manageModelVisibility")}</button>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={actionsBlocked || (locallyHidden.length === 0 && selectedModels.length === 0)}
+          onClick={() => { void writeVisibility("provider", rows, true); }}>{t("models.allOn")}</button>
+        <button type="button" className="btn btn-ghost btn-sm" disabled={actionsBlocked || visible.length === 0}
+          onClick={() => { void writeVisibility("provider", rows, false); }}>{t("models.allOff")}</button>
       </div>
       {needsReauth && <div className="pws-inline-error" role="status">
         <span>{t("pws.modelsNeedsReauth")}</span>

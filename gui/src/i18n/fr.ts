@@ -724,7 +724,7 @@ export const fr: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "Définition enregistrée, mais le catalogue des modèles n’a pas pu être actualisé. Relancez l’actualisation ; ne l’ajoutez pas à nouveau.",
   "pws.modelMutationUnconfirmed": "La modification n’a pas pu être confirmée. Actualisez les modèles avant de réessayer.",
   "pws.modelRemovedRefreshPending": "La modification a été enregistrée, mais le catalogue des modèles n’a pas pu être actualisé. Relancez l’actualisation.",
-  "pws.modelHidden": "Modèle masqué. Rétablissez sa visibilité dans Modèles.",
+  "pws.modelHidden": "Masqué pour ce fournisseur. Réaffichez-le depuis la liste des modèles masqués ci-dessous.",
   "pws.modelDefinitionDeleted": "Définition personnalisée supprimée. Un modèle sous-jacent peut toujours apparaître.",
   "pws.modelKnown": "Ce modèle est déjà connu. Gérez sa visibilité dans Modèles.",
   "models.customDeleteConfirm": "Supprimer la définition personnalisée de {name} ? Un modèle natif ou découvert sous-jacent peut réapparaître.",

@@ -721,7 +721,7 @@ export const ko: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "정의를 저장했지만 모델 카탈로그를 갱신하지 못했습니다. 갱신을 다시 시도하고, 모델을 중복 추가하지 마세요.",
   "pws.modelMutationUnconfirmed": "변경 여부를 확인하지 못했습니다. 모델 목록을 새로고침한 뒤 다시 시도하세요.",
   "pws.modelRemovedRefreshPending": "변경 사항을 저장했지만 모델 카탈로그를 갱신하지 못했습니다. 갱신을 다시 시도하세요.",
-  "pws.modelHidden": "모델을 숨겼습니다. 모델에서 다시 표시할 수 있습니다.",
+  "pws.modelHidden": "이 제공업체에서 숨겼습니다. 아래 숨김 목록에서 다시 표시할 수 있습니다.",
   "pws.modelDefinitionDeleted": "커스텀 정의를 삭제했습니다. 원래 모델은 계속 표시될 수 있습니다.",
   "pws.modelKnown": "이미 등록된 모델입니다. 모델에서 노출 상태를 관리하세요.",
   "models.customDeleteConfirm": "{name}의 커스텀 정의를 삭제하시겠습니까? 원래 네이티브 모델이나 발견된 모델이 다시 나타날 수 있습니다.",

@@ -710,7 +710,7 @@ export const de: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "Definition gespeichert, aber der Modellkatalog konnte nicht aktualisiert werden. Wiederhole die Aktualisierung; füge das Modell nicht erneut hinzu.",
   "pws.modelMutationUnconfirmed": "Die Änderung konnte nicht bestätigt werden. Aktualisiere die Modelle, bevor du es erneut versuchst.",
   "pws.modelRemovedRefreshPending": "Die Änderung wurde gespeichert, aber der Modellkatalog konnte nicht aktualisiert werden. Wiederhole die Aktualisierung.",
-  "pws.modelHidden": "Modell ausgeblendet. Stelle die Sichtbarkeit unter Modelle wieder her.",
+  "pws.modelHidden": "Für diesen Anbieter ausgeblendet. Über die Liste der ausgeblendeten Modelle unten wieder einblenden.",
   "pws.modelDefinitionDeleted": "Benutzerdefinierte Definition gelöscht. Ein zugrunde liegendes Modell kann weiterhin angezeigt werden.",
   "pws.modelKnown": "Dieses Modell ist bereits bekannt. Verwalte seine Sichtbarkeit unter Modelle.",
   "models.customDeleteConfirm": "Benutzerdefinierte Definition für {name} löschen? Ein zugrunde liegendes natives oder erkanntes Modell kann wieder erscheinen.",

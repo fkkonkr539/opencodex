@@ -718,7 +718,7 @@ export const zh: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "定义已保存，但模型目录刷新失败。请重试刷新，不要再次添加模型。",
   "pws.modelMutationUnconfirmed": "无法确认更改结果。请刷新模型列表后再试。",
   "pws.modelRemovedRefreshPending": "更改已保存，但模型目录刷新失败。请重试刷新。",
-  "pws.modelHidden": "模型已隐藏。可在模型中恢复显示。",
+  "pws.modelHidden": "已在此提供方隐藏。可在下方隐藏列表中恢复显示。",
   "pws.modelDefinitionDeleted": "自定义定义已删除。原有模型可能仍会显示。",
   "pws.modelKnown": "此模型已存在。请在模型中管理其可见性。",
   "models.customDeleteConfirm": "要删除 {name} 的自定义定义吗？原有的原生模型或已发现模型可能会重新显示。",

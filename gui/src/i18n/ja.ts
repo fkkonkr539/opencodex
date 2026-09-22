@@ -2863,7 +2863,7 @@ export const ja: Record<TKey, string> = {
   "pws.modelSavedRefreshPending": "定義を保存しましたが、モデルカタログを更新できませんでした。更新を再試行してください。モデルを再追加しないでください。",
   "pws.modelMutationUnconfirmed": "変更を確認できませんでした。再試行する前にモデルを再読み込みしてください。",
   "pws.modelRemovedRefreshPending": "変更を保存しましたが、モデルカタログを更新できませんでした。更新を再試行してください。",
-  "pws.modelHidden": "モデルを非表示にしました。モデルで表示を復元できます。",
+  "pws.modelHidden": "このプロバイダーで非表示にしました。下の非表示リストから再表示できます。",
   "pws.modelDefinitionDeleted": "カスタム定義を削除しました。元のモデルが引き続き表示される場合があります。",
   "pws.modelKnown": "このモデルはすでに登録されています。モデルで表示を管理してください。",
   "models.customDeleteConfirm": "{name} のカスタム定義を削除しますか？元のネイティブモデルや検出済みモデルが再び表示される場合があります。",
