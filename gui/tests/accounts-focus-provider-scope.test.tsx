@@ -18,6 +18,7 @@ let win: Window;
 let host: HTMLElement;
 let root: Root | null = null;
 let originalFetch: typeof globalThis.fetch;
+let openedModels = 0;
 
 function oauthItem(name: string): WorkspaceItem {
   return {
@@ -30,6 +31,7 @@ function oauthItem(name: string): WorkspaceItem {
 }
 
 beforeEach(() => {
+  openedModels = 0;
   previous = Object.fromEntries(globals.map((k) => [k, Reflect.get(globalThis, k)])) as typeof previous;
   originalFetch = globalThis.fetch;
   win = new Window({ url: "http://localhost/" });
@@ -94,12 +96,7 @@ async function mountDetails(item: WorkspaceItem, focus: { token: number; provide
           key={item.name}
           item={item}
           availableModels={[]}
-          hasLiveModels={false}
-          selectedModels={[]}
-          modelRows={[]}
-          modelRevision="accounts-focus-1"
-          modelRowsReady={true}
-          onOpenModels={() => {}}
+          onOpenModels={() => { openedModels += 1; }}
           onDeselect={() => {}}
           apiBase=""
           accounts={[]}
@@ -127,4 +124,13 @@ test("selecting provider B after A's focus request does not open B Accounts", as
 test("the reveal target still opens Accounts on mount-time token", async () => {
   await mountDetails(oauthItem("alpha"), { token: 3, provider: "alpha" });
   expect(selectedTabId()).toBe("pws-tab-accounts");
+});
+
+test("provider details links to the single model inventory", async () => {
+  await mountDetails(oauthItem("alpha"), { token: 0, provider: null });
+  expect(host.querySelector('#pws-tab-models')).toBeNull();
+  const open = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "Open Models");
+  expect(open).toBeDefined();
+  await act(async () => open!.click());
+  expect(openedModels).toBe(1);
 });

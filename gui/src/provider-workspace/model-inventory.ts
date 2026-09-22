@@ -83,39 +83,3 @@ export function parseModelSelection(value: unknown): {
   }));
   return { available: Object.assign(Object.create(null), available), selected, liveModelCounts: Object.assign(Object.create(null), liveModelCounts) };
 }
-
-export interface CustomModelRecord { id: string; provider: string; modelId: string }
-
-function parseCustomRecord(value: unknown): CustomModelRecord {
-  const row = record(value);
-  return { id: identity(row.id), provider: identity(row.provider), modelId: identity(row.modelId) };
-}
-
-export function parseCustomModelInventory(value: unknown): CustomModelRecord[] {
-  if (!Array.isArray(value)) throw new Error("Invalid custom model inventory");
-  const ids = new Map<string, CustomModelRecord>();
-  const selectors = new Set<string>();
-  for (const raw of value) {
-    const row = parseCustomRecord(raw);
-    const key = JSON.stringify([row.provider, row.modelId]);
-    if (ids.has(row.id) || selectors.has(key)) throw new Error("Duplicate custom ownership");
-    ids.set(row.id, row);
-    selectors.add(key);
-  }
-  return [...ids.values()];
-}
-
-export function parseCustomModelCreated(value: unknown, provider: string, modelId: string): CustomModelRecord {
-  const row = parseCustomRecord(value);
-  if (row.provider !== provider || row.modelId !== modelId) throw new Error("Unexpected created model");
-  return row;
-}
-
-/** Save confirmation and catalog convergence are separate outcomes. */
-export function catalogRefreshPending(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return true;
-  const status = (value as Record<string, unknown>).catalogRefresh;
-  if (!status || typeof status !== "object" || Array.isArray(status)) return true;
-  const disposition = status as Record<string, unknown>;
-  return disposition.status !== "committed" || typeof disposition.changed !== "boolean" || typeof disposition.degraded !== "boolean";
-}

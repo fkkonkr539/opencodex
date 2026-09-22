@@ -607,15 +607,7 @@ export default function Providers({ apiBase }: { apiBase: string }) {
             modelUsage={data.modelUsage}
             quotaReport={data.quotaReport}
             availableModels={data.availableModels}
-            hasLiveModels={data.hasLiveModels}
-            selectedModels={data.selectedModels}
-            modelRows={data.modelRows}
-            modelRevision={data.modelRevision}
-            modelRowsReady={data.modelRowsReady}
             onOpenModels={() => navigateHash(modelsProviderHash(item.name))}
-            modelsLoading={data.modelsLoading}
-            modelsLoadFailed={data.modelsLoadFailed}
-            onRetryModels={data.onRetryModels}
             oauthEmail={loginStatus?.email}
             onDeselect={() => setWorkspaceSelected(null)}
             apiBase={apiBase}

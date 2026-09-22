@@ -3,9 +3,6 @@ import {
   parseModelInventory,
   countModelInventory,
   parseModelSelection,
-  parseCustomModelInventory,
-  parseCustomModelCreated,
-  catalogRefreshPending,
 } from "../src/provider-workspace/model-inventory";
 import type { ModelRow } from "../src/pages/models-shared";
 
@@ -87,7 +84,7 @@ test("the same namespaced key in distinct provider groups remains distinct", () 
   expect(countModelInventory(rows)).toEqual({ vendor: 1, another: 1 });
 });
 
-test("counts use unique non-disabled inventory before selection, query or the 300-chip cap", () => {
+test("counts use unique non-disabled inventory before selection or query", () => {
   const rows = Array.from({ length: 305 }, (_, index) => row({ id: `model-${index}`, namespaced: `vendor/model-${index}` }));
   rows.push({ ...rows[0]! }, row({ id: "hidden", namespaced: "vendor/hidden", disabled: true }),
     row({ provider: "hidden-only", disabled: true }), row({ provider: "other", initialSelectionPending: true, disabled: true }));
@@ -120,31 +117,6 @@ for (const value of [
     expect(() => parseModelSelection(value)).toThrow();
   });
 }
-
-test("custom ownership validates the full list, including foreign provider rows", () => {
-  const record = { id: "stable", provider: "vendor", modelId: "model" };
-  expect(parseCustomModelInventory([record])).toEqual([record]);
-  for (const value of [null, {}, [{ provider: "vendor", modelId: "model" }], [record, { id: "foreign", provider: "other", modelId: 3 }]]) {
-    expect(() => parseCustomModelInventory(value)).toThrow();
-  }
-  expect(() => parseCustomModelInventory([record, { ...record, provider: "other" }])).toThrow();
-  expect(() => parseCustomModelInventory([record, { ...record, modelId: "replacement" }])).toThrow();
-});
-
-test("POST adoption requires exact provider, raw model and nonblank stable id", () => {
-  const record = { id: "new-id", provider: "vendor", modelId: "vendor/model" };
-  expect(parseCustomModelCreated(record, "vendor", "vendor/model")).toEqual(record);
-  for (const value of [null, {}, { ...record, id: " " }, { ...record, provider: "other" }, { ...record, modelId: "vendor-model" }]) {
-    expect(() => parseCustomModelCreated(value, "vendor", "vendor/model")).toThrow();
-  }
-});
-
-test("refresh outcome cannot imply success from an absent or malformed disposition", () => {
-  expect(catalogRefreshPending({ catalogRefresh: { status: "committed", changed: true, degraded: false, notices: [] } })).toBe(false);
-  for (const value of [{}, { catalogRefresh: null }, { catalogRefresh: { status: "failed" } }, { catalogRefresh: { status: "unknown" } }]) {
-    expect(catalogRefreshPending(value)).toBe(true);
-  }
-});
 
 test("custom/native flags and used metadata cannot authorize a malformed DTO", () => {
   for (const extra of [
