@@ -523,6 +523,19 @@ describe("request pacing concurrency caps", () => {
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 
+  test("a fractional maxConcurrentRequests below one keeps a cap of one", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 0.5 });
+    const first = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const second = waitForProviderRequestSlot("demo", configured, "model-a");
+    const blocked = providerRequestPacingStatus("demo", configured);
+    expect(blocked.inFlight).toBe(1);
+    expect(blocked.queued).toBe(1);
+    first.release();
+    const secondSlot = await second;
+    secondSlot.release();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
   test("a source read settling after consumer cancel stays inert and released", async () => {
     const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
     const slot = await waitForProviderRequestSlot("demo", configured, "model-a");

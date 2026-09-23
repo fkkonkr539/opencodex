@@ -136,8 +136,9 @@ function normalizedInterval(rule: RequestPacingRule | undefined): number {
 function normalizedMaxConcurrent(rule: RequestPacingRule | undefined): number {
   return typeof rule?.maxConcurrentRequests === "number" && rule.maxConcurrentRequests > 0
     // Floor so runtime-injected configs that bypass the integer schema cannot admit
-    // one request past the configured ceiling (a 2.5 cap must not let a third start).
-    ? Math.floor(rule.maxConcurrentRequests)
+    // one request past the configured ceiling (a 2.5 cap must not let a third start);
+    // clamp sub-1 fractionals up to 1 so a positive cap never degrades into none.
+    ? Math.max(1, Math.floor(rule.maxConcurrentRequests))
     : 0;
 }
 
