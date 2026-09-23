@@ -158,6 +158,14 @@ export function registryEntryForProviderDestination(
  * wire. The resolver receives the allow-list so this helper cannot accidentally widen the
  * adapter-selection boundary when a new registry entry is added.
  */
+function resolveTargetRegistryEntry(
+  id: string,
+  provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
+): ProviderRegistryEntry | undefined {
+  const direct = getProviderRegistryEntry(id);
+  return direct ? (providerMatchesRegistryTransport(id, provider) ? direct : undefined) : registryEntryForProviderDestination(provider);
+}
+
 export function providerModelWireDefault(
   id: string,
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
@@ -166,8 +174,8 @@ export function providerModelWireDefault(
   inbound: InboundWire,
 ): string | undefined {
   if (!allowedWires.has(provider.adapter)) return undefined;
-  const entry = getProviderRegistryEntry(id);
-  if (!entry?.modelWireDefaults || !providerMatchesRegistryTransport(id, provider)) return undefined;
+  const entry = resolveTargetRegistryEntry(id, provider);
+  if (!entry?.modelWireDefaults) return undefined;
   const declared = entry.modelWireDefaults[modelId.trim().toLowerCase()];
   if (declared === undefined) return undefined;
   // A bare string applies to every inbound/auth mode; the object form may narrow either.
@@ -186,9 +194,7 @@ export function providerModelResponsesUpstreamStreaming(
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
   modelId: string,
 ): boolean | undefined {
-  const entry = getProviderRegistryEntry(id);
-  if (!entry?.modelResponsesUpstreamStreaming || !providerMatchesRegistryTransport(id, provider)) return undefined;
-  return entry.modelResponsesUpstreamStreaming[modelId.trim().toLowerCase()];
+  return resolveTargetRegistryEntry(id, provider)?.modelResponsesUpstreamStreaming?.[modelId.trim().toLowerCase()];
 }
 
 /** Resolve a registry-only terminal-repair policy for native Responses streams. */
@@ -197,12 +203,9 @@ export function providerModelResponsesTerminalRepair(
   provider: Pick<OcxProviderConfig, "baseUrl" | "adapter"> & Partial<Pick<OcxProviderConfig, "authMode">>,
   modelId: string,
 ): ResponsesTerminalRepairPolicy | undefined {
-  const entry = getProviderRegistryEntry(id);
-  if (!entry?.modelResponsesTerminalRepair || !providerMatchesRegistryTransport(id, provider)) return undefined;
-  const policy = entry.modelResponsesTerminalRepair[modelId.trim().toLowerCase()];
+  const policy = resolveTargetRegistryEntry(id, provider)?.modelResponsesTerminalRepair?.[modelId.trim().toLowerCase()];
   const graceMs = Math.floor(policy?.graceMs ?? 0);
-  if (!Number.isFinite(graceMs) || graceMs <= 0) return undefined;
-  return { graceMs };
+  return Number.isFinite(graceMs) && graceMs > 0 ? { graceMs } : undefined;
 }
 
 /**
@@ -211,11 +214,9 @@ export function providerModelResponsesTerminalRepair(
  * `"pool"`. Other providers keep registry-only metadata (there is no mode for `openai-apikey`).
  */
 export function providerCodexAccountMode(id: string, provider?: OcxProviderConfig): CodexAccountMode | undefined {
-  const registryMode = getProviderRegistryEntry(id)?.codexAccountMode;
-  if (id !== "openai") return registryMode;
+  if (id !== "openai") return getProviderRegistryEntry(id)?.codexAccountMode;
   const persisted = provider?.codexAccountMode;
-  if (persisted === "pool" || persisted === "direct") return persisted;
-  return registryMode ?? "pool";
+  return persisted === "pool" || persisted === "direct" ? persisted : getProviderRegistryEntry(id)?.codexAccountMode ?? "pool";
 }
 
 /**
@@ -227,6 +228,5 @@ export function effectiveGoogleMode(
   providerId: string,
   prov: { adapter?: string; googleMode?: "ai-studio" | "vertex" | "cloud-code-assist" },
 ): "ai-studio" | "vertex" | "cloud-code-assist" | null {
-  if (prov.adapter !== "google") return null;
-  return prov.googleMode ?? getProviderRegistryEntry(providerId)?.googleMode ?? "ai-studio";
+  return prov.adapter === "google" ? prov.googleMode ?? getProviderRegistryEntry(providerId)?.googleMode ?? "ai-studio" : null;
 }

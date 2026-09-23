@@ -51,6 +51,21 @@ describe("OpenCode Go GPT 5.6 Luna wire selection (#1482)", () => {
         .toBe("openai-chat");
     }
   });
+
+  test("custom provider aliases inheriting OpenCode Go transport use Responses for wire-default models", () => {
+    for (const model of GO_RESPONSES_MODELS) {
+      for (const inbound of ["responses", "chat", "anthropic"] as const) {
+        expect(resolveWireProtocolOverride("OG", model, opencodeGo(), inbound).adapter)
+          .toBe("openai-responses");
+      }
+    }
+  });
+
+  test("custom providers with an unrelated endpoint do not inherit Responses wire defaults", () => {
+    const custom = { adapter: "openai-chat", baseUrl: "https://gateway.example.test/v1" };
+    expect(resolveWireProtocolOverride("custom-gateway", "muse-spark-1.3-contributor", custom, "responses").adapter)
+      .toBe("openai-chat");
+  });
 });
 
 describe("OpenCode Go stateless Responses", () => {

@@ -98,9 +98,11 @@ export function captureRouteStaticPolicy(
   effectiveAlias?: string | null,
   inboundWire: "responses" | "chat" | "anthropic" = "responses",
 ): ResolvedModelPolicy {
-  const registryEntry = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
-  const transportMatchedRegistry = !!registryEntry
-    && providerMatchesRegistryTransportWithStaticGuards(providerName, provider);
+  const direct = PROVIDER_REGISTRY.find(entry => entry.id === providerName);
+  const registryEntry = direct
+    ? (providerMatchesRegistryTransportWithStaticGuards(providerName, provider) ? direct : undefined)
+    : registryEntryForProviderDestination(provider);
+  const transportMatchedRegistry = !!registryEntry;
   return resolveModelPolicy({
     providerName,
     modelId,
