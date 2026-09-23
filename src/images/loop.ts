@@ -26,7 +26,7 @@ import {
 } from "../providers/request-pacing";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
-import { applyUpstreamRecoveryInit, fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
+import { applyUpstreamRecoveryInit, cancelResponseBodyBestEffort, fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
 import { rateLimitRetryDelayMs } from "../providers/key-failover";
 import {
   createTranslatorBudget,
@@ -467,7 +467,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
     // expose buildRequest/fetchResponse/parseStream to the bridge, so collect their events through
     // an AdapterEventQueue and pass the bounded collection directly to the common scanner.
     if (adapter.runTurn) {
-      pacingSlot = await deps.waitForRequestSlot?.(signal) ?? undefined;
+      pacingSlot = await deps.waitForRequestSlot?.(signal);
       try {
         const queue = createAdapterEventQueue({
           onBacklogExceeded: () => internalAbort.abort("runTurn backlog exceeded"),
@@ -578,7 +578,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       // The previous lease belongs to a request that already settled (a reset-retry replays
       // only after the first send rejected), so returning it here cannot over-admit.
       pacingSlot?.release();
-      pacingSlot = await deps.waitForRequestSlot?.(signal) ?? undefined;
+      pacingSlot = await deps.waitForRequestSlot?.(signal);
       headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     };
     try {
@@ -699,7 +699,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         } catch (error) {
           // The rotation hook rejected before the body handoff below: cancel the tracked body
           // so its pacing lease returns instead of leaking on the abandoned 429 response.
-          try { void prepared.response.body?.cancel().catch(() => {}); } catch { /* already closed */ }
+          cancelResponseBodyBestEffort(prepared.response);
           throw error;
         }
         if (!rotated) break;

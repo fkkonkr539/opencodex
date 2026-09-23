@@ -135,7 +135,9 @@ function normalizedInterval(rule: RequestPacingRule | undefined): number {
 
 function normalizedMaxConcurrent(rule: RequestPacingRule | undefined): number {
   return typeof rule?.maxConcurrentRequests === "number" && rule.maxConcurrentRequests > 0
-    ? rule.maxConcurrentRequests
+    // Floor so runtime-injected configs that bypass the integer schema cannot admit
+    // one request past the configured ceiling (a 2.5 cap must not let a third start).
+    ? Math.floor(rule.maxConcurrentRequests)
     : 0;
 }
 
@@ -277,6 +279,9 @@ function runQueue(providerName: string, state: ProviderPacer): void {
       // Scheduling for its readyAt (in the past) would spin the timer on every empty pass.
       earliestAt = Math.min(earliestAt, readyAt <= now ? Number.POSITIVE_INFINITY : readyAt, expiresAt);
     }
+    // Unreachable for a non-empty queue: rejectExpiredWaiters above removed every waiter
+    // whose expiresAt passed, so each remaining one contributes a finite value. Kept as a
+    // belt-and-braces backstop rather than a case future readers should hunt for.
     if (!Number.isFinite(earliestAt)) return;
     const delayMs = Math.max(0, earliestAt - now);
     state.timer = runtime.setTimer(() => {
@@ -437,8 +442,11 @@ export function trackProviderRequestSlotBody(
     pull: async controller => {
       consumed = true;
       clearExpiryTimer();
-      reader ??= source.getReader();
       try {
+        // Inside the try: a source another reader already locked makes getReader()
+        // throw, and with the deadline disarmed above that failure must release the
+        // lease here instead of stranding it for the process lifetime.
+        reader ??= source.getReader();
         const { done, value } = await reader.read();
         // A consumer cancel while this read was pending resolves it (done or a late chunk);
         // touching the cancelled controller would throw from the pull algorithm.

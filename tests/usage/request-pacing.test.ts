@@ -510,6 +510,19 @@ describe("request pacing concurrency caps", () => {
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 
+  test("a fractional maxConcurrentRequests floors to the integer below", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1.5 });
+    const first = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const second = waitForProviderRequestSlot("demo", configured, "model-a");
+    const blocked = providerRequestPacingStatus("demo", configured);
+    expect(blocked.inFlight).toBe(1);
+    expect(blocked.queued).toBe(1);
+    first.release();
+    const secondSlot = await second;
+    secondSlot.release();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
   test("a source read settling after consumer cancel stays inert and released", async () => {
     const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
     const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
@@ -525,6 +538,23 @@ describe("request pacing concurrency caps", () => {
     settleSourcePull?.();
     await pendingRead.then(() => undefined, () => undefined);
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a source body locked by another reader releases the lease when getReader throws", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("chunk")); },
+    });
+    // A second reader on the same source makes getReader() throw from the pull
+    // algorithm; the lease must return even though the consumer never saw a byte.
+    const original = new Response(source);
+    const response = trackProviderRequestSlotBody(slot, original);
+    const otherReader = original.body!.getReader();
+    const reader = response.body!.getReader();
+    await expect(reader.read()).rejects.toBeInstanceOf(TypeError);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    await otherReader.cancel("test cleanup");
   });
 
   test("interval-only acquisition serves a saturated provider without taking a lease", async () => {
