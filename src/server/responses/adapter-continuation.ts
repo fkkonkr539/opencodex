@@ -14,7 +14,11 @@ import {
   recordAttemptCredentialSource,
 } from "../request-log";
 import { noteAttemptRecoveryWithheld } from "../request-log";
-import { waitForProviderRequestSlot, type ProviderRequestSlot } from "../../providers/request-pacing";
+import {
+  releaseProviderRequestSlot,
+  waitForProviderRequestSlot,
+  type ProviderRequestSlot,
+} from "../../providers/request-pacing";
 import { providerFetch, fetchWithHeaderTimeout, safeHostLabel } from "./fetch-helpers";
 import {
   transientRetryPolicyFor,
@@ -201,21 +205,27 @@ export function createAdapterContinuations(
           const pacingSlot: ProviderRequestSlot = await waitForProviderRequestSlot(
             route.providerName, route.provider, nextParsed.modelId, upstream.signal,
           );
-          return await transportState.activeAdapter.fetchResponse(builtContinuationRequest, {
-            abortSignal: upstream.signal,
-            timeoutMs: connectMs,
+          try {
+            return await transportState.activeAdapter.fetchResponse(builtContinuationRequest, {
+              abortSignal: upstream.signal,
+              timeoutMs: connectMs,
               sendBudget: adapterDispatchBudget,
-            onPhysicalSend: send => noteAdapterPhysicalSend(continuationEstimate, send),
-            onRecoveryWithheld: noteAdapterRecoveryWithheld,
-            stream: nextParsed.stream,
-            executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-              pacingSlotAcquired: true,
-              pacingSlot,
-              dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
-              providerName: route.providerName,
-              modelId: nextParsed.modelId,
-            }),
-          });
+              onPhysicalSend: send => noteAdapterPhysicalSend(continuationEstimate, send),
+              onRecoveryWithheld: noteAdapterRecoveryWithheld,
+              stream: nextParsed.stream,
+              executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                pacingSlotAcquired: true,
+                pacingSlot,
+                dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
+                providerName: route.providerName,
+                modelId: nextParsed.modelId,
+              }),
+            });
+          } finally {
+            // A continuation that fails before its executor dispatches must return the
+            // lease; a dispatched send's tracked body keeps its own release.
+            releaseProviderRequestSlot(pacingSlot);
+          }
         }
         // Same #1851 scope guard as the initial send: transient-5xx retry only for direct
         // Google AI Studio; every other adapter keeps reset-only semantics here.

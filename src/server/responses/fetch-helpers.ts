@@ -211,6 +211,13 @@ export interface ProviderFetchOptions {
   pacingSlotAcquired?: boolean;
   /** The lease for that pre-acquired slot, so the first physical send can release it on body close. */
   pacingSlot?: ProviderRequestSlot;
+  /**
+   * This executor serves one logical turn that owns at most one concurrency lease: the
+   * pre-acquired slot. Every later send through the same stateful wrapper (Cursor HTTP/1.1
+   * BidiAppend/redial behind an open RunSSE) paces by interval only, so a follow-up never
+   * queues behind the lease its own turn still holds.
+   */
+  turnScopedPacing?: boolean;
   /** Captured selected-account observer, attached before the native WS send. */
   onCodexWsQuota?: CodexWsQuotaObserver;
   /** Synchronous admission at actual credential dispatch, after pacing/backoff. */
@@ -330,7 +337,13 @@ export function providerFetch(
       return Promise.resolve(slot);
     }
     return options.providerName
-      ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
+      ? waitForProviderRequestSlot(
+        options.providerName,
+        provider,
+        options.modelId,
+        signal,
+        options.turnScopedPacing ? { concurrency: false } : undefined,
+      )
       : Promise.resolve(undefined);
   };
   const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {

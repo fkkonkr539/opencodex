@@ -504,7 +504,7 @@ describe("runWithImageBridge", () => {
       parsed: makeParsed(),
       adapter: rateLimitedAdapter,
       plan,
-      waitForRequestSlot: async () => ({ leased: true, release: () => { releases += 1; } }),
+      waitForRequestSlot: async () => ({ leased: true, bodyTracked: false, release: () => { releases += 1; } }),
       on429: () => { throw new Error("rotation exploded"); },
     });
     expect(response.ok).toBe(false);
@@ -972,6 +972,27 @@ describe("runWithImageBridge", () => {
 // ---------------------------------------------------------------------------
 
 describe("runWithImageBridge — runTurn adapter", () => {
+  test("the runTurn adapter receives the iteration's pacing lease through its incoming meta", async () => {
+    let released = false;
+    const lease = { leased: true, bodyTracked: false, release: () => { released = true; } };
+    let received: unknown;
+    const adapter: ProviderAdapter = {
+      ...mockAdapter,
+      runTurn: async (_parsed, incoming, emit) => {
+        received = incoming.pacingSlot;
+        emit({ type: "text_delta", text: "paced" });
+        emit({ type: "done" });
+      },
+    };
+    const response = await runWithImageBridge({
+      parsed: makeParsed(), adapter, plan, waitForRequestSlot: async () => lease,
+    });
+    const sse = await response.text();
+    expect(received).toBe(lease);
+    expect(released).toBe(true);
+    expect(sse).toContain("event: response.completed");
+  });
+
   test("charges the queue's coalesced tail, not each delta it discarded", async () => {
     // createAdapterEventQueue merges adjacent text deltas into chunks while no reader is
     // scheduled, so a synchronous producer's one-character deltas survive as a handful of

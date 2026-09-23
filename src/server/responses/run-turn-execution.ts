@@ -14,6 +14,7 @@ import {
 } from "./core-replay";
 import { noteAttemptRecoveryWithheld, sealRequestAttemptIdentity, recordAttemptCredentialSource } from "../request-log";
 import {
+  releaseProviderRequestSlot,
   waitForProviderRequestSlot,
   RequestPacingQueueOverloadError,
   type ProviderRequestSlot,
@@ -179,11 +180,13 @@ export async function executeResponsesRunTurn(
           {
             providerName: route.providerName,
             modelId: route.modelId,
-            // runTurnAttempt acquired this logical turn's first physical-request slot above.
-            // Cursor HTTP/1.1 consumes it for RunSSE; every BidiAppend and redial then waits on
-            // the same provider queue through this stateful wrapper.
+            // runTurnAttempt acquired this logical turn's one concurrency lease above, and
+            // Cursor HTTP/1.1 spends it on RunSSE. BidiAppend and redial then pace by
+            // interval only through this stateful wrapper: a follow-up acquiring a second
+            // lease would queue behind the lease its own still-open RunSSE holds.
             pacingSlotAcquired: true,
             pacingSlot,
+            turnScopedPacing: true,
           },
         );
         await transportState.runTurnAdapter.runTurn?.(
@@ -193,6 +196,9 @@ export async function executeResponsesRunTurn(
             abortSignal: runTurnAbort.signal,
             translatorBudget,
             providerFetch: runTurnProviderFetch,
+            // The turn's lease, for runTurn wrappers that build their own providerFetch:
+            // the first send through that wrapper must release on body close, not here.
+            pacingSlot,
             // The only way the request budget reaches a transport the adapter owns. Without it
             // a Cursor turn's inner ladder was three physical sends the cap read as one.
             ...(adapterDispatchBudget ? { sendBudget: adapterDispatchBudget } : {}),
@@ -239,10 +245,11 @@ export async function executeResponsesRunTurn(
           logCtx.conversationId = normalizeLogConversationId(parsed._cursorConversationId);
         }
         targetQueue.close();
-        // The attempt owns its lease: an HTTP transport released it when the body closed,
-        // and a bidirectional transport that never reached HTTP must not hold it past the
-        // turn. release() is idempotent, so the second call is a no-op on the HTTP path.
-        pacingSlot?.release();
+        // The attempt owns its lease until a response body takes over: an HTTP transport
+        // releases it when the body closes (or the unconsumed-body deadline does), and a
+        // transport that never reached HTTP must not hold it past the turn. A lease a
+        // tracked body still owns stays with that body even if it outlives this function.
+        releaseProviderRequestSlot(pacingSlot);
       }
     };
     const runTurn = async (): Promise<void> => runTurnAttempt(queue, undefined, true, initialPacingSlot);

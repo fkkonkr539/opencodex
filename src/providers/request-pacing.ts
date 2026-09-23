@@ -1,8 +1,16 @@
 import type { OcxProviderConfig, RequestPacingRule } from "../types";
 import type { GenerationContext } from "../lib/state-store-sweeper";
+import { carryReplayRefusal, isNonReplayableResponse, markResponseNonReplayable } from "../lib/upstream-retry";
 
 export const REQUEST_PACING_MAX_QUEUE_DEPTH = 256;
 export const REQUEST_PACING_MAX_QUEUE_AGE_MS = 60_000;
+/**
+ * A leased response body that is neither read nor cancelled for this long releases its
+ * lease and cancels the body: a caller that dropped a Response without touching its body
+ * must not hold a concurrency slot until process restart. The first pull or cancel disarms
+ * the deadline, so slowly-streamed legitimate bodies are never reclaimed.
+ */
+export const REQUEST_PACING_UNCONSUMED_BODY_MS = 30_000;
 
 let maxQueueDepth = REQUEST_PACING_MAX_QUEUE_DEPTH;
 let maxQueueAgeMs = REQUEST_PACING_MAX_QUEUE_AGE_MS;
@@ -66,11 +74,22 @@ export interface ProviderRequestSlot {
    * their identity through the fetch path.
    */
   readonly leased: boolean;
+  /**
+   * True once a tracked response body owns this lease, meaning body completion, body
+   * cancellation, or the unconsumed-body deadline will release it. Turn-end cleanup must
+   * then leave the release to that lifecycle instead of returning the lease early.
+   */
+  readonly bodyTracked: boolean;
   /** Idempotent. Safe to call from body completion, cancellation, and error paths alike. */
   release(): void;
 }
 
-const inertProviderRequestSlot: ProviderRequestSlot = { leased: false, release() {} };
+/** Internal: leased slots expose this to trackProviderRequestSlotBody when a body takes over the release. */
+interface BodyTrackableProviderRequestSlot extends ProviderRequestSlot {
+  markBodyTracked(): void;
+}
+
+const inertProviderRequestSlot: ProviderRequestSlot = { leased: false, bodyTracked: false, release() {} };
 
 export interface RequestPacingRuntime {
   now: () => number;
@@ -161,11 +180,22 @@ function pacingRetryAfterSeconds(state: ProviderPacer, modelId: string | undefin
   return Math.max(1, Math.ceil(Math.max(0, waiterReadyAt(state, modelId) - now) / 1000));
 }
 
-function makeProviderRequestSlot(providerName: string, state: ProviderPacer, waiter: Waiter): ProviderRequestSlot {
+function makeProviderRequestSlot(
+  providerName: string,
+  state: ProviderPacer,
+  waiter: Waiter,
+): BodyTrackableProviderRequestSlot {
   let released = false;
+  let bodyTracked = false;
   const leased = waiter.providerMaxConcurrent > 0 || waiter.modelMaxConcurrent > 0;
   return {
     leased,
+    get bodyTracked() {
+      return bodyTracked;
+    },
+    markBodyTracked() {
+      bodyTracked = true;
+    },
     release() {
       if (released) return;
       released = true;
@@ -278,11 +308,22 @@ export async function waitForProviderRequestSlot(
   provider: OcxProviderConfig,
   modelId?: string,
   signal?: AbortSignal,
+  options?: { concurrency?: boolean },
 ): Promise<ProviderRequestSlot> {
   const intervals = requestPacingIntervals(provider, modelId);
+  // A turn-scoped transport sends several physical requests per logical turn (Cursor
+  // HTTP/1.1 RunSSE plus BidiAppends). One lease covers the turn; follow-up sends pace
+  // by interval only, or a follow-up would queue behind the lease its own turn holds.
+  const concurrency = options?.concurrency !== false;
+  const waiterIntervals = concurrency ? intervals : {
+    providerIntervalMs: intervals.providerIntervalMs,
+    modelIntervalMs: intervals.modelIntervalMs,
+    providerMaxConcurrent: 0,
+    modelMaxConcurrent: 0,
+  };
   const paced = Math.max(intervals.providerIntervalMs, intervals.modelIntervalMs) > 0
-    || intervals.providerMaxConcurrent > 0
-    || intervals.modelMaxConcurrent > 0;
+    || waiterIntervals.providerMaxConcurrent > 0
+    || waiterIntervals.modelMaxConcurrent > 0;
   if (!paced) return inertProviderRequestSlot;
   if (signal?.aborted) throw abortReason(signal);
 
@@ -311,7 +352,7 @@ export async function waitForProviderRequestSlot(
   return await new Promise<ProviderRequestSlot>((resolve, reject) => {
     const waiter: Waiter = {
       modelId,
-      ...intervals,
+      ...waiterIntervals,
       queuedAt: runtime.now(),
       signal,
       resolve,
@@ -345,11 +386,10 @@ export async function waitForProviderRequestSlot(
 /**
  * Tie a pacing slot lease to an upstream response body: the lease is released when the
  * body completes, errors, or is cancelled by the consumer. A null body (204/304/HEAD)
- * means the exchange is already finished, so the lease returns immediately.
- *
- * Caveat: a caller that neither reads nor cancels the returned body keeps the lease; the
- * abort paths that cancel abandoned streams are the backstop. The returned Response
- * preserves status, statusText, and headers.
+ * means the exchange is already finished, so the lease returns immediately. A body that
+ * is neither read nor cancelled for REQUEST_PACING_UNCONSUMED_BODY_MS releases its lease
+ * and cancels the body, so a dropped Response cannot hold a slot forever. The returned
+ * Response preserves status, statusText, headers, and the identity-based replay markers.
  */
 export function trackProviderRequestSlotBody(
   slot: ProviderRequestSlot | undefined,
@@ -358,21 +398,45 @@ export function trackProviderRequestSlotBody(
   // An unleased slot has nothing to return on body close, and rewrapping the Response
   // would break identity-based markers (the eager WS relay registry is a WeakSet).
   if (!slot?.leased) return response;
+  // Slots built outside waitForProviderRequestSlot (test doubles) satisfy only the public
+  // ProviderRequestSlot shape; their bodies still own the release through the wrapper below.
+  (slot as Partial<BodyTrackableProviderRequestSlot>).markBodyTracked?.();
   if (!response.body) {
     slot.release();
     return response;
   }
   const source = response.body;
   let released = false;
+  let consumed = false;
+  let expiryTimer: unknown;
+  const clearExpiryTimer = (): void => {
+    if (expiryTimer === undefined) return;
+    runtime.clearTimer(expiryTimer);
+    expiryTimer = undefined;
+  };
   const release = (): void => {
     if (released) return;
     released = true;
+    clearExpiryTimer();
     slot.release();
   };
+  expiryTimer = runtime.setTimer(() => {
+    expiryTimer = undefined;
+    if (released || consumed) return;
+    release();
+    void source.cancel().catch(() => {});
+    console.warn(
+      "[opencodex] requestPacing released a concurrency lease after "
+      + REQUEST_PACING_UNCONSUMED_BODY_MS
+      + "ms because the provider response body was neither read nor cancelled; the body was cancelled.",
+    );
+  }, REQUEST_PACING_UNCONSUMED_BODY_MS);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancelled = false;
   const tracked = new ReadableStream<Uint8Array>({
     pull: async controller => {
+      consumed = true;
+      clearExpiryTimer();
       reader ??= source.getReader();
       try {
         const { done, value } = await reader.read();
@@ -393,15 +457,31 @@ export function trackProviderRequestSlotBody(
     },
     cancel: reason => {
       cancelled = true;
+      consumed = true;
+      clearExpiryTimer();
       release();
       return (reader ?? source).cancel(reason);
     },
   });
-  return new Response(tracked, {
+  const wrapped = new Response(tracked, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
+  // Retry helpers mark the response they return from, and recovery decisions key on these
+  // identity markers; the rewrap must not make a non-replayable response look replayable.
+  if (isNonReplayableResponse(response)) markResponseNonReplayable(wrapped);
+  return carryReplayRefusal(response, wrapped);
+}
+
+/**
+ * Return a lease at a turn or attempt boundary: a lease a tracked response body now owns
+ * is left to that body's lifecycle, and any other unconsumed lease is released. Idempotent,
+ * and a no-op for interval-only slots, so every boundary can call it unconditionally.
+ */
+export function releaseProviderRequestSlot(slot: ProviderRequestSlot | undefined): void {
+  if (!slot || slot.bodyTracked) return;
+  slot.release();
 }
 
 export function providerRequestPacingStatus(

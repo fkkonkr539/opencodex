@@ -374,10 +374,14 @@ export async function prepareResponsesTransport(
       if (!run) throw new Error("Selected provider no longer supports this turn transport");
       let sent = false;
       let refused = false;
-      // Both main and image-loop callers already acquired the initial pacing slot.
-      // Subsequent physical messages retain this adapter/credential and are paced normally.
+      // Both main and image-loop callers already acquired this logical turn's one pacing
+      // lease (IncomingMeta.pacingSlot). The first attempt's send releases it when that
+      // response body closes; subsequent physical messages pace by interval only through
+      // this stateful wrapper, so a follow-up never queues behind its own turn's lease.
       const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
         providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
+        pacingSlot: incoming.pacingSlot,
+        turnScopedPacing: true,
         beforeDispatch: () => {
           if (sent) return;
           if (!selectionIsCurrent(binding)) {

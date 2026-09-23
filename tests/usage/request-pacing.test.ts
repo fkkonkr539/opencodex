@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  REQUEST_PACING_UNCONSUMED_BODY_MS,
+  releaseProviderRequestSlot,
   trackProviderRequestSlotBody,
   providerRequestPacingStatus,
   reconcileProviderRequestPacing,
@@ -11,6 +13,12 @@ import {
   waitForProviderRequestSlot,
   type RequestPacingRuntime,
 } from "../../src/providers/request-pacing";
+import { createAdapterPhysicalSend } from "../../src/adapters/physical-send";
+import {
+  isNonReplayableResponse,
+  isReplayRefusalResponse,
+  retainReplayRefusal,
+} from "../../src/lib/upstream-retry";
 import { providerFetch } from "../../src/server/responses/fetch-helpers";
 import { fetchWithHeaderTimeout } from "../../src/server/responses/fetch-helpers";
 import { requestPacingOverloadResponse } from "../../src/server/responses/pacing-overload";
@@ -516,6 +524,140 @@ describe("request pacing concurrency caps", () => {
     await reader.cancel("consumer closed the exchange");
     settleSourcePull?.();
     await pendingRead.then(() => undefined, () => undefined);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("interval-only acquisition serves a saturated provider without taking a lease", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const held = await waitForProviderRequestSlot("demo", configured, "model-a");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    const followUp = await waitForProviderRequestSlot(
+      "demo", configured, "model-a", undefined, { concurrency: false },
+    );
+    expect(followUp.leased).toBe(false);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    followUp.release();
+    held.release();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("an unread tracked body releases its lease and cancels the source at the deadline", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("chunk")); },
+      cancel: () => { cancelled = true; },
+    });
+    trackProviderRequestSlotBody(slot, new Response(source));
+    clock.advanceBy(REQUEST_PACING_UNCONSUMED_BODY_MS - 1);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    clock.advanceBy(1);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
+    const next = await waitForProviderRequestSlot("demo", configured, "model-a");
+    next.release();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("reading the tracked body disarms the unconsumed-body deadline", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const response = trackProviderRequestSlotBody(slot, new Response(openBodyStream()));
+    const reader = response.body!.getReader();
+    const { value } = await reader.read();
+    expect(new TextDecoder().decode(value)).toBe("chunk");
+    clock.advanceBy(REQUEST_PACING_UNCONSUMED_BODY_MS * 10);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    await reader.cancel("consumer closed");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("turn-boundary release skips a lease a tracked body still owns", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const response = trackProviderRequestSlotBody(slot, new Response(openBodyStream()));
+    expect(slot.bodyTracked).toBe(true);
+    releaseProviderRequestSlot(slot);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    await response.body!.cancel("turn done");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    const bare = await waitForProviderRequestSlot("demo", configured, "model-a");
+    releaseProviderRequestSlot(bare);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("turn-scoped providerFetch follow-up sends do not queue behind the turn's own lease", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: (async () => new Response(openBodyStream())) as typeof fetch,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const executor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+      pacingSlot: slot,
+      turnScopedPacing: true,
+    });
+    const first = await executor("https://example.test/runsse");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    // A BidiAppend behind the still-open RunSSE body: interval-only, never lease-blocked.
+    const second = await executor("https://example.test/bidi-append");
+    expect(second.status).toBe(200);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    await first.body!.cancel("run finished");
+    await second.body!.cancel("append finished");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a send refused before the executor consumes the lease returns it at the boundary release", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const executor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+      pacingSlot: slot,
+    });
+    const controller = new AbortController();
+    controller.abort(new Error("client gone"));
+    const send = createAdapterPhysicalSend({ abortSignal: controller.signal }, executor);
+    // The refusal fires before waitForPacing, so the executor never consumes the lease...
+    await expect(send({
+      url: "https://example.test/inference",
+      dispatch: async () => new Response("never"),
+    })).rejects.toBeTruthy();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    // ...and the dispatch-boundary finally (releaseProviderRequestSlot) returns it.
+    releaseProviderRequestSlot(slot);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    const next = await waitForProviderRequestSlot("demo", configured, "model-a");
+    next.release();
+  });
+
+  test("wrapping a leased response preserves identity-based replay markers", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const first = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const refusal = retainReplayRefusal(new Response("refused"));
+    const wrappedRefusal = trackProviderRequestSlotBody(first, refusal);
+    expect(isNonReplayableResponse(wrappedRefusal)).toBe(true);
+    expect(isReplayRefusalResponse(wrappedRefusal)).toBe(true);
+    await wrappedRefusal.text();
+    const second = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const plain = trackProviderRequestSlotBody(second, new Response("ok"));
+    expect(isNonReplayableResponse(plain)).toBe(false);
+    expect(isReplayRefusalResponse(plain)).toBe(false);
+    await plain.text();
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 });

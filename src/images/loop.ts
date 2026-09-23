@@ -19,7 +19,11 @@ import { namespacedToolName, toolChoiceToolPredicate } from "../types";
 import { cloneProviderOpaqueToolCallMetadata } from "../responses/provider-opaque-metadata";
 import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
-import { trackProviderRequestSlotBody, type ProviderRequestSlot } from "../providers/request-pacing";
+import {
+  releaseProviderRequestSlot,
+  trackProviderRequestSlotBody,
+  type ProviderRequestSlot,
+} from "../providers/request-pacing";
 import { clearableDeadline, idleDeadline } from "../lib/abort";
 import { readBoundedResponseBody } from "../lib/bounded-body";
 import { applyUpstreamRecoveryInit, fetchWithResetRetry, prepareSameTarget429Wait } from "../lib/upstream-retry";
@@ -512,6 +516,9 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
             headers: deps.forwardHeaders ? new Headers(deps.forwardHeaders) : new Headers(),
             abortSignal: signal,
             translatorBudget,
+            // The iteration's lease, so a runTurn wrapper building its own providerFetch
+            // releases it on that first send's body close instead of only at iteration end.
+            pacingSlot,
           }, emit).then(closeOnAbort).catch(err => {
             if (accepting) {
               collectionError = err;
@@ -558,8 +565,9 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         return { response: new Response(new Uint8Array(0), { status: 200 }), responseAdapter: adapter, collectedEvents: events };
       } finally {
         // The synthetic response carries no upstream bytes: the collected events were the
-        // exchange, so the lease returns here rather than waiting for a body nobody reads.
-        pacingSlot?.release();
+        // exchange, so an unconsumed lease returns here rather than waiting for a turn
+        // nobody reads. A lease a tracked upstream body owns stays with that body.
+        releaseProviderRequestSlot(pacingSlot);
         pacingSlot = undefined;
       }
     }

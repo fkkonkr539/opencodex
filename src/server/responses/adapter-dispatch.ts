@@ -18,7 +18,11 @@ import {
 import { clientCancelledResponse, readDisplaySafeErrorText, normalizeUpstreamErrorText } from "./core-errors";
 import { redactSecretString } from "../../lib/redact";
 import { rewriteUpstreamPolicyRefusal } from "./policy-refusal";
-import { waitForProviderRequestSlot, type ProviderRequestSlot } from "../../providers/request-pacing";
+import {
+  releaseProviderRequestSlot,
+  waitForProviderRequestSlot,
+  type ProviderRequestSlot,
+} from "../../providers/request-pacing";
 import { providerFetch, fetchWithHeaderTimeout, safeHostLabel } from "./fetch-helpers";
 import {
   transientRetryPolicyFor,
@@ -294,21 +298,29 @@ export async function prepareAdapterExchange(
       const pacingSlot: ProviderRequestSlot = await waitForProviderRequestSlot(
         route.providerName, route.provider, route.modelId, upstream.signal,
       );
-      upstreamResponse = await transportState.activeAdapter.fetchResponse(builtInitialRequest, {
-        abortSignal: upstream.signal,
-        timeoutMs: connectMs,
-        sendBudget: adapterDispatchBudget,
-        onPhysicalSend: send => noteAdapterPhysicalSend(inputTokenEstimate, send),
-        onRecoveryWithheld: noteAdapterRecoveryWithheld,
-        stream: parsed.stream,
-        executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-          pacingSlotAcquired: true,
-          pacingSlot,
-          dispatchOverride: oauthDispatch(builtInitialRequest),
-          providerName: route.providerName,
-          modelId: route.modelId,
-        }),
-      });
+      try {
+        upstreamResponse = await transportState.activeAdapter.fetchResponse(builtInitialRequest, {
+          abortSignal: upstream.signal,
+          timeoutMs: connectMs,
+          sendBudget: adapterDispatchBudget,
+          onPhysicalSend: send => noteAdapterPhysicalSend(inputTokenEstimate, send),
+          onRecoveryWithheld: noteAdapterRecoveryWithheld,
+          stream: parsed.stream,
+          executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+            pacingSlotAcquired: true,
+            pacingSlot,
+            dispatchOverride: oauthDispatch(builtInitialRequest),
+            providerName: route.providerName,
+            modelId: route.modelId,
+          }),
+        });
+      } finally {
+        // fetchResponse can throw (an abort, a send-budget refusal, a build failure) or
+        // return without ever dispatching through the executor; either would strand this
+        // lease. A dispatched send already tracked its body, and this release skips that
+        // body-owned lease so the release still follows the body lifecycle.
+        releaseProviderRequestSlot(pacingSlot);
+      }
     } else {
       // #1851 scope guard: transient-5xx retry on this generic adapter path is opt-in for
       // direct Google AI Studio only (Vertex/Antigravity use fetchResponse above). Other
@@ -461,29 +473,35 @@ export async function prepareAdapterExchange(
             const pacingSlot: ProviderRequestSlot = await waitForProviderRequestSlot(
               route.providerName, route.provider, route.modelId, upstream.signal,
             );
-            // The dispatch boundary is HERE, not before the pacing wait: that wait can reject for
-            // an abort, a saturated queue, an expired slot or a removed provider, and none of
-            // those reach the wire. Confirming earlier would hold the charge for a send that the
-            // pacer refused.
-            onDispatch?.();
-            return await transportState.activeAdapter.fetchResponse(retryRequest, {
-              abortSignal: upstream.signal,
-              timeoutMs: connectMs,
-            sendBudget: adapterDispatchBudget,
-              onPhysicalSend: send => {
-                noteAdapterPhysicalSend(retryEstimate, send);
-                chargeFastDowngradeWorkflowSend();
-              },
-              onRecoveryWithheld: noteAdapterRecoveryWithheld,
-              stream: parsed.stream,
-              executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-                pacingSlotAcquired: true,
-                pacingSlot,
-              	dispatchOverride: oauthDispatch(retryRequest),
-                providerName: route.providerName,
-                modelId: route.modelId,
-              }),
-            });
+            try {
+              // The dispatch boundary is HERE, not before the pacing wait: that wait can reject for
+              // an abort, a saturated queue, an expired slot or a removed provider, and none of
+              // those reach the wire. Confirming earlier would hold the charge for a send that the
+              // pacer refused.
+              onDispatch?.();
+              return await transportState.activeAdapter.fetchResponse(retryRequest, {
+                abortSignal: upstream.signal,
+                timeoutMs: connectMs,
+                sendBudget: adapterDispatchBudget,
+                onPhysicalSend: send => {
+                  noteAdapterPhysicalSend(retryEstimate, send);
+                  chargeFastDowngradeWorkflowSend();
+                },
+                onRecoveryWithheld: noteAdapterRecoveryWithheld,
+                stream: parsed.stream,
+                executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+                  pacingSlotAcquired: true,
+                  pacingSlot,
+                  dispatchOverride: oauthDispatch(retryRequest),
+                  providerName: route.providerName,
+                  modelId: route.modelId,
+                }),
+              });
+            } finally {
+              // Same lease guarantee as the initial send: a refused onDispatch or a
+              // fetchResponse failure before dispatch must not strand the retry lease.
+              releaseProviderRequestSlot(pacingSlot);
+            }
           }
           // #2643 review: this leg used to call fetchWithHeaderTimeout directly, so an
           // opted-in provider's transient-5xx policy applied to the initial send and to

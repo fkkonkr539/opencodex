@@ -107,7 +107,7 @@ describe("adapter physical inference admission", () => {
 
   test("a pacing slot is released when the dispatched response body completes", async () => {
     let releases = 0;
-    const slot = { leased: true, release: () => { releases += 1; } };
+    const slot = { leased: true, bodyTracked: false, release: () => { releases += 1; } };
     const send = createAdapterPhysicalSend({},
       Object.assign(async () => new Response(new ReadableStream({
         start(controller) {
@@ -125,7 +125,7 @@ describe("adapter physical inference admission", () => {
 
   test("a pacing slot is released when the dispatch rejects", async () => {
     let releases = 0;
-    const slot = { leased: true, release: () => { releases += 1; } };
+    const slot = { leased: true, bodyTracked: false, release: () => { releases += 1; } };
     const send = createAdapterPhysicalSend({},
       Object.assign(async () => { throw new Error("no route to provider"); }, {
         waitForPacing: async () => slot,
@@ -136,7 +136,7 @@ describe("adapter physical inference admission", () => {
 
   test("a null-body dispatched response releases the pacing slot immediately", async () => {
     let releases = 0;
-    const slot = { leased: true, release: () => { releases += 1; } };
+    const slot = { leased: true, bodyTracked: false, release: () => { releases += 1; } };
     const send = createAdapterPhysicalSend({},
       Object.assign(async () => new Response(null, { status: 204 }), {
         waitForPacing: async () => slot,
