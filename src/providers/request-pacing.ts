@@ -7,10 +7,27 @@ export const REQUEST_PACING_MAX_QUEUE_AGE_MS = 60_000;
 /**
  * A leased response body that is neither read nor cancelled for this long releases its
  * lease and cancels the body: a caller that dropped a Response without touching its body
- * must not hold a concurrency slot until process restart. The first pull or cancel disarms
- * the deadline, so slowly-streamed legitimate bodies are never reclaimed.
+ * must not hold a concurrency slot until process restart. The first pull or cancel swaps
+ * this deadline for the longer inactivity window below.
  */
 export const REQUEST_PACING_UNCONSUMED_BODY_MS = 30_000;
+/**
+ * Once a tracked body has been pulled at least once, this much silence reclaims its lease
+ * and cancels the body: a consumer that reads part of a response and then abandons it
+ * without cancel() (a clone-based peek that cancels only its own tee branch) must not
+ * hold a concurrency slot forever either. The window is far longer than the unconsumed
+ * deadline because a live consumer waiting on a slow upstream is indistinguishable from
+ * an abandoned one at this layer; providers keep SSE connections alive with keep-alives
+ * well inside this window.
+ */
+export const REQUEST_PACING_BODY_INACTIVITY_MS = 300_000;
+/**
+ * Retry-After floor for a waiter refused while blocked by a concurrency cap rather than
+ * by a spacing interval. Interval readiness computes to zero under a pure cap, and the
+ * 1s minimum would invite clients to re-hit a saturated provider every second, which is
+ * the shared-account 429 churn this feature exists to prevent.
+ */
+export const REQUEST_PACING_CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 
 let maxQueueDepth = REQUEST_PACING_MAX_QUEUE_DEPTH;
 let maxQueueAgeMs = REQUEST_PACING_MAX_QUEUE_AGE_MS;
@@ -80,6 +97,12 @@ export interface ProviderRequestSlot {
    * then leave the release to that lifecycle instead of returning the lease early.
    */
   readonly bodyTracked: boolean;
+  /**
+   * True once release() has run. A turn-scoped transport uses this to stop pacing by
+   * interval after the lease it relied on is gone (a send that threw, a body that
+   * closed) and re-acquire with concurrency, so the cap keeps counting its follow-ups.
+   */
+  readonly released: boolean;
   /** Idempotent. Safe to call from body completion, cancellation, and error paths alike. */
   release(): void;
 }
@@ -89,7 +112,7 @@ interface BodyTrackableProviderRequestSlot extends ProviderRequestSlot {
   markBodyTracked(): void;
 }
 
-const inertProviderRequestSlot: ProviderRequestSlot = { leased: false, bodyTracked: false, release() {} };
+const inertProviderRequestSlot: ProviderRequestSlot = { leased: false, bodyTracked: false, released: false, release() {} };
 
 export interface RequestPacingRuntime {
   now: () => number;
@@ -167,6 +190,14 @@ function requestPacingIntervals(provider: OcxProviderConfig, modelId?: string): 
   };
 }
 
+/**
+ * Whether a concurrency cap applies to this provider/model, expressed as the looser of
+ * the two configured bounds. Enforcement gates the provider cap and the model cap
+ * independently (a model override of 1 inside a provider cap of 5 admits one), so the
+ * return value is a cap-presence signal — every current caller tests it for > 0 — and
+ * NOT an effective ceiling. A caller that needs the true ceiling must compute
+ * min(provider, model || Infinity) itself.
+ */
 export function requestPacingMaxConcurrentRequests(provider: OcxProviderConfig, modelId?: string): number {
   const limits = requestPacingIntervals(provider, modelId);
   return Math.max(limits.providerMaxConcurrent, limits.modelMaxConcurrent);
@@ -179,8 +210,18 @@ function waiterReadyAt(state: ProviderPacer, modelId: string | undefined): numbe
   );
 }
 
-function pacingRetryAfterSeconds(state: ProviderPacer, modelId: string | undefined, now: number): number {
-  return Math.max(1, Math.ceil(Math.max(0, waiterReadyAt(state, modelId) - now) / 1000));
+function pacingRetryAfterSeconds(
+  state: ProviderPacer,
+  modelId: string | undefined,
+  now: number,
+  concurrencyCapped = false,
+): number {
+  const intervalSeconds = Math.max(1, Math.ceil(Math.max(0, waiterReadyAt(state, modelId) - now) / 1000));
+  // A waiter blocked by an in-flight lease has no interval to report: when the wait ends
+  // in refusal, the honest answer is that the cap is saturated, not "retry every second".
+  return concurrencyCapped
+    ? Math.max(intervalSeconds, REQUEST_PACING_CONCURRENCY_RETRY_AFTER_SECONDS)
+    : intervalSeconds;
 }
 
 function makeProviderRequestSlot(
@@ -195,6 +236,9 @@ function makeProviderRequestSlot(
     leased,
     get bodyTracked() {
       return bodyTracked;
+    },
+    get released() {
+      return released;
     },
     markBodyTracked() {
       bodyTracked = true;
@@ -230,7 +274,12 @@ function rejectExpiredWaiters(providerName: string, state: ProviderPacer, now: n
     waiter.reject(new RequestPacingQueueOverloadError(
       providerName,
       "queue_expired",
-      pacingRetryAfterSeconds(state, waiter.modelId, now),
+      pacingRetryAfterSeconds(
+        state,
+        waiter.modelId,
+        now,
+        waiter.providerMaxConcurrent > 0 || waiter.modelMaxConcurrent > 0,
+      ),
     ));
   }
 }
@@ -351,7 +400,12 @@ export async function waitForProviderRequestSlot(
     throw new RequestPacingQueueOverloadError(
       providerName,
       "queue_full",
-      pacingRetryAfterSeconds(state, modelId, runtime.now()),
+      pacingRetryAfterSeconds(
+        state,
+        modelId,
+        runtime.now(),
+        waiterIntervals.providerMaxConcurrent > 0 || waiterIntervals.modelMaxConcurrent > 0,
+      ),
     );
   }
 
@@ -415,6 +469,7 @@ export function trackProviderRequestSlotBody(
   let released = false;
   let consumed = false;
   let expiryTimer: unknown;
+  let expiryKind: "unconsumed" | "inactive" = "unconsumed";
   const clearExpiryTimer = (): void => {
     if (expiryTimer === undefined) return;
     runtime.clearTimer(expiryTimer);
@@ -426,23 +481,36 @@ export function trackProviderRequestSlotBody(
     clearExpiryTimer();
     slot.release();
   };
-  expiryTimer = runtime.setTimer(() => {
-    expiryTimer = undefined;
-    if (released || consumed) return;
-    release();
-    void source.cancel().catch(() => {});
-    console.warn(
-      "[opencodex] requestPacing released a concurrency lease after "
-      + REQUEST_PACING_UNCONSUMED_BODY_MS
-      + "ms because the provider response body was neither read nor cancelled; the body was cancelled.",
-    );
-  }, REQUEST_PACING_UNCONSUMED_BODY_MS);
+  const armExpiryTimer = (delayMs: number, kind: "unconsumed" | "inactive"): void => {
+    clearExpiryTimer();
+    expiryKind = kind;
+    expiryTimer = runtime.setTimer(() => {
+      expiryTimer = undefined;
+      if (released) return;
+      release();
+      void source.cancel().catch(() => {});
+      console.warn(
+        expiryKind === "inactive"
+          ? "[opencodex] requestPacing released a concurrency lease after "
+            + REQUEST_PACING_BODY_INACTIVITY_MS
+            + "ms of response body inactivity; the body was cancelled."
+          : "[opencodex] requestPacing released a concurrency lease after "
+            + REQUEST_PACING_UNCONSUMED_BODY_MS
+            + "ms because the provider response body was neither read nor cancelled; the body was cancelled.",
+      );
+    }, delayMs);
+  };
+  armExpiryTimer(REQUEST_PACING_UNCONSUMED_BODY_MS, "unconsumed");
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let cancelled = false;
   const tracked = new ReadableStream<Uint8Array>({
     pull: async controller => {
       consumed = true;
-      clearExpiryTimer();
+      // A pull proves a consumer is attached, not that it will keep reading: re-arm a
+      // longer inactivity deadline instead of disarming. A body read once and then
+      // abandoned (a clone-based peek that cancels only its own tee branch) must still
+      // return its lease, while a live stream keeps pushing the deadline back per pull.
+      armExpiryTimer(REQUEST_PACING_BODY_INACTIVITY_MS, "inactive");
       try {
         // Inside the try: a source another reader already locked makes getReader()
         // throw, and with the deadline disarmed above that failure must release the
@@ -478,11 +546,21 @@ export function trackProviderRequestSlotBody(
     // until a reader actually asks for bytes.
     highWaterMark: 0,
   });
-  const wrapped = new Response(tracked, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  });
+  let wrapped: Response;
+  try {
+    wrapped = new Response(tracked, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  } catch (error) {
+    // A non-conforming status (a proxy passing a raw 6xx through) or a body on a
+    // null-body status throws here after markBodyTracked, and boundary cleanup skips
+    // body-tracked slots: return the lease now instead of waiting out the deadline.
+    release();
+    void source.cancel().catch(() => {});
+    throw error;
+  }
   // Retry helpers mark the response they return from, and recovery decisions key on these
   // identity markers; the rewrap must not make a non-replayable response look replayable.
   if (isNonReplayableResponse(response)) markResponseNonReplayable(wrapped);
@@ -521,7 +599,7 @@ export async function withProviderRequestSlot<T>(
   } finally {
     releaseProviderRequestSlot(pacingSlot);
   }
- }
+}
 
 export function providerRequestPacingStatus(
   providerName: string,

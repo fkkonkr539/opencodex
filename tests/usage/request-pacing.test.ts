@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  REQUEST_PACING_BODY_INACTIVITY_MS,
+  REQUEST_PACING_CONCURRENCY_RETRY_AFTER_SECONDS,
   REQUEST_PACING_UNCONSUMED_BODY_MS,
   releaseProviderRequestSlot,
   trackProviderRequestSlotBody,
@@ -207,6 +209,24 @@ describe("provider request pacing queue", () => {
       providerName: "demo",
     });
     expect(providerRequestPacingStatus("demo", configured).queued).toBe(0);
+  });
+
+  test("a concurrency-blocked waiter refused at the queue deadline reports a floored retry-after", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    setProviderRequestPacingLimitsForTest({ maxQueueAgeMs: 25 });
+    // Pure concurrency cap: no interval to report, so the interval-based math would
+    // answer 1s and invite second-by-second retries against a saturated provider.
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    await waitForProviderRequestSlot("demo", configured, "model-a");
+    const queued = waitForProviderRequestSlot("demo", configured, "model-a");
+    clock.advanceBy(25);
+    const rejection = await queued.then(
+      () => undefined,
+      error => error as RequestPacingQueueOverloadError,
+    );
+    expect(rejection?.reason).toBe("queue_expired");
+    expect(rejection?.retryAfterSeconds).toBe(REQUEST_PACING_CONCURRENCY_RETRY_AFTER_SECONDS);
   });
 
   test("generation reconciliation removes deleted providers and rejects their queued waiters", async () => {
@@ -497,6 +517,33 @@ describe("request pacing concurrency caps", () => {
     expect(started).toHaveLength(2);
   });
 
+  test("fetchWithHeaderTimeout rejects an invalid header before acquiring the lease", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    let sends = 0;
+    const fetchImpl = Object.assign(async () => {
+      sends += 1;
+      return new Response("ok");
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: fetchImpl,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const executor = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    // A newline in an adapter-built header value rejects at Headers construction, which
+    // must happen before the pacing acquire so the rejection cannot strand the lease.
+    await expect(fetchWithHeaderTimeout(
+      "https://example.test/one",
+      { method: "GET", headers: { "x-bad": "value\nwith-newline" } },
+      new AbortController().signal,
+      1_000,
+      false,
+      executor,
+    )).rejects.toThrow();
+    expect(sends).toBe(0);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
   test("status reports model-only concurrency caps as in-flight", async () => {
     const configured = provider({ enabled: true, models: { narrow: { maxConcurrentRequests: 1 } } });
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
@@ -610,7 +657,7 @@ describe("request pacing concurrency caps", () => {
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 
-  test("reading the tracked body disarms the unconsumed-body deadline", async () => {
+  test("a body read once and abandoned reclaims its lease at the inactivity deadline", async () => {
     const clock = fakePacingClock();
     setProviderRequestPacingRuntimeForTest(clock.runtime);
     const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
@@ -619,10 +666,36 @@ describe("request pacing concurrency caps", () => {
     const reader = response.body!.getReader();
     const { value } = await reader.read();
     expect(new TextDecoder().decode(value)).toBe("chunk");
-    clock.advanceBy(REQUEST_PACING_UNCONSUMED_BODY_MS * 10);
+    // The first pull swaps the short unconsumed deadline for the longer inactivity
+    // window, so a slowly-arriving next chunk never reclaims a live stream...
+    clock.advanceBy(REQUEST_PACING_BODY_INACTIVITY_MS - 1);
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
-    await reader.cancel("consumer closed");
+    // ...but a consumer that stops reading (a clone-based peek that cancelled only its
+    // own tee branch) must still return the lease instead of holding it forever.
+    clock.advanceBy(1);
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    await reader.cancel("consumer closed").catch(() => {});
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a non-conforming status throws after tracking and returns the lease immediately", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode("chunk")); },
+      cancel: () => { cancelled = true; },
+    });
+    // Bun's fetch passes a raw non-2xx-5xx status through; rewrapping it in new Response
+    // throws AFTER markBodyTracked, and boundary cleanup skips body-tracked slots.
+    const raw = new Response(source);
+    Object.defineProperty(raw, "status", { value: 601 });
+    expect(() => trackProviderRequestSlotBody(slot, raw)).toThrow();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
+    const next = await waitForProviderRequestSlot("demo", configured, "model-a");
+    next.release();
   });
 
   test("turn-boundary release skips a lease a tracked body still owns", async () => {
@@ -663,6 +736,83 @@ describe("request pacing concurrency caps", () => {
     await first.body!.cancel("run finished");
     await second.body!.cancel("append finished");
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a turn-scoped follow-up re-acquires with concurrency once its lease was released", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    let failFirstDial = true;
+    let calls = 0;
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: (async () => {
+        calls += 1;
+        if (failFirstDial) {
+          failFirstDial = false;
+          throw new Error("dial failed before commit");
+        }
+        return new Response("redial ok");
+      }) as typeof fetch,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const executor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+      pacingSlot: slot,
+      turnScopedPacing: true,
+    });
+    // A pre-commit dial failure throws out of the send: the executor's catch releases
+    // the turn lease, and the slot now reports it.
+    await expect(executor("https://example.test/runsse")).rejects.toThrow("dial failed before commit");
+    expect(slot.released).toBe(true);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    // Another turn takes the only lease. The redial through the SAME stateful wrapper
+    // must queue behind it with concurrency admission instead of firing uncounted.
+    const holder = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const redial = executor("https://example.test/redial");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(calls).toBe(1);
+    expect(providerRequestPacingStatus("demo", configured).queued).toBe(1);
+    holder.release();
+    const response = await redial;
+    expect(calls).toBe(2);
+    expect(await response.text()).toBe("redial ok");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("beforeAdmission drops a parked body ahead of the pacing wait, not behind it", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const send = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    const physical = createAdapterPhysicalSend({}, send);
+    // A retryable-looking response parks its tracked body; under a cap of one the next
+    // attempt can only be admitted once that body is cancelled.
+    const first = await physical({
+      url: "https://example.test/attempt",
+      dispatch: async () => new Response(openBodyStream()),
+    });
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    const admittedAt: number[] = [];
+    const second = await physical({
+      url: "https://example.test/retry",
+      beforeAdmission: () => { void first.body!.cancel().catch(() => {}); },
+      beforeDispatch: () => { admittedAt.push(clock.now()); },
+      dispatch: async () => new Response("retried"),
+    });
+    expect(await second.text()).toBe("retried");
+    expect(admittedAt).toEqual([0]);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a configured cap without providerName refuses the send instead of skipping enforcement", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const executor = providerFetch(configured);
+    await expect(executor("https://example.test/v1/send"))
+      .rejects.toThrow("providerName");
   });
 
   test("a send refused before the executor consumes the lease returns it at the boundary release", async () => {

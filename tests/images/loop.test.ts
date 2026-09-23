@@ -505,7 +505,7 @@ describe("runWithImageBridge", () => {
       parsed: makeParsed(),
       adapter: rateLimitedAdapter,
       plan,
-      waitForRequestSlot: async () => ({ leased: true, bodyTracked: false, release: () => { releases += 1; } }),
+      waitForRequestSlot: async () => ({ leased: true, bodyTracked: false, released: false, release: () => { releases += 1; } }),
       on429: () => { throw new Error("rotation exploded"); },
     });
     expect(response.ok).toBe(false);
@@ -975,7 +975,7 @@ describe("runWithImageBridge", () => {
 describe("runWithImageBridge — runTurn adapter", () => {
   test("the runTurn adapter receives the iteration's pacing lease through its incoming meta", async () => {
     let released = false;
-    const lease = { leased: true, bodyTracked: false, release: () => { released = true; } };
+    const lease = { leased: true, bodyTracked: false, released: false, release: () => { released = true; } };
     let received: unknown;
     const adapter: ProviderAdapter = {
       ...mockAdapter,

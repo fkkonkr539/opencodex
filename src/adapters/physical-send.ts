@@ -18,6 +18,11 @@ export function createAdapterPhysicalSend(ctx: AdapterFetchContext = {}, fallbac
     url: string;
     sendClass?: SendClass;
     recovery?: AttemptRecoveryKind;
+    /** Runs before admission, ahead of the pacing wait: drop resources that hold the
+     * very lease this send would otherwise queue behind, e.g. cancel a superseded
+     * response body. A budget refusal precedes it, so a refused replay can still
+     * return the parked response intact. */
+    beforeAdmission?: () => void | Promise<void>;
     /** Runs only after admission, e.g. backoff and cancellation of a superseded response. */
     beforeDispatch?: () => void | Promise<void>;
     dispatch: (executor: typeof globalThis.fetch) => Promise<Response>;
@@ -40,6 +45,13 @@ export function createAdapterPhysicalSend(ctx: AdapterFetchContext = {}, fallbac
     }) as typeof globalThis.fetch;
     let pacingSlot: ProviderRequestSlot | undefined;
     try {
+      // Admission must not queue behind a lease this caller is about to drop: the retry
+      // ladders park a retryable response and cancel it here, before the wait, while
+      // beforeDispatch keeps its post-admission semantics (backoff, credential refresh,
+      // refused-replay contracts). With the cancel sitting behind waitForPacing, a cap of
+      // one self-deadlocks: the parked body holds the only lease the next attempt needs.
+      await options.beforeAdmission?.();
+      if (ctx.abortSignal?.aborted) throw abortError(ctx.abortSignal);
       pacingSlot = await executor.waitForPacing?.(ctx.abortSignal);
       if (ctx.abortSignal?.aborted) throw abortError(ctx.abortSignal);
       await options.beforeDispatch?.();

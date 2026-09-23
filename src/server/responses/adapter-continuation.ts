@@ -14,9 +14,7 @@ import {
   recordAttemptCredentialSource,
 } from "../request-log";
 import { noteAttemptRecoveryWithheld } from "../request-log";
-import {
-  withProviderRequestSlot,
-} from "../../providers/request-pacing";
+import { pacedAdapterDispatch } from "./adapter-dispatch";
 import { providerFetch, fetchWithHeaderTimeout, safeHostLabel } from "./fetch-helpers";
 import {
   transientRetryPolicyFor,
@@ -201,25 +199,24 @@ export function createAdapterContinuations(
         if (transportState.activeAdapter.fetchResponse) {
           transportState.noteRoutedAttemptSend(continuationEstimate, replayKind);
           // A continuation that fails before its executor dispatches still returns its
-          // lease at this boundary; a dispatched send's tracked body keeps its own release.
-          return await withProviderRequestSlot(
-            route.providerName, route.provider, nextParsed.modelId, upstream.signal,
-            pacingSlot => transportState.activeAdapter.fetchResponse!(builtContinuationRequest, {
-              abortSignal: upstream.signal,
-              timeoutMs: connectMs,
-              sendBudget: adapterDispatchBudget,
-              onPhysicalSend: send => noteAdapterPhysicalSend(continuationEstimate, send),
-              onRecoveryWithheld: noteAdapterRecoveryWithheld,
-              stream: nextParsed.stream,
-              executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-                pacingSlotAcquired: true,
-                pacingSlot,
-                dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
-                providerName: route.providerName,
-                modelId: nextParsed.modelId,
-              }),
-            }),
-          );
+          // lease at this boundary (pacedAdapterDispatch); a dispatched send's tracked
+          // body keeps its own release.
+          return await pacedAdapterDispatch({
+            providerName: route.providerName,
+            provider: route.provider,
+            modelId: nextParsed.modelId,
+            signal: upstream.signal,
+            connectMs,
+            sendBudget: adapterDispatchBudget,
+            stream: nextParsed.stream,
+            request: builtContinuationRequest,
+            dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
+            codexWsRuntimeIdentity: options.codexWsRuntimeIdentity,
+            estimate: continuationEstimate,
+            fetchResponse: transportState.activeAdapter.fetchResponse!,
+            noteAdapterPhysicalSend,
+            noteAdapterRecoveryWithheld,
+          });
         }
         // Same #1851 scope guard as the initial send: transient-5xx retry only for direct
         // Google AI Studio; every other adapter keeps reset-only semantics here.

@@ -675,7 +675,9 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
       if (!retry) return response;
       try {
         return await send({ url: retry.url, sendClass: "repair", recovery: "reasoning-effort-downgrade",
-          beforeDispatch: () => { try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ } },
+          // Cancel the superseded response before the pacing wait: under a concurrency
+          // cap its tracked body holds a lease the replay would queue behind.
+          beforeAdmission: () => { try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ } },
           dispatch: physical => fetchCommandCode(retry, ctx, physical) });
       } catch (error) {
         if (error instanceof SendBudgetExhaustedError) return response;

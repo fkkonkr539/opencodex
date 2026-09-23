@@ -21,7 +21,6 @@ import {
 } from "../../providers/request-pacing";
 import type { AdapterEventQueue } from "../../adapters/run-turn-queue";
 import type { AttemptRecoveryKind } from "../../usage/log";
-import { providerFetch } from "./fetch-helpers";
 import { normalizeLogConversationId } from "../request-log-conversation";
 import { normalizeDeclaredToolName, type AdapterEvent, type OcxProviderContinuationState } from "../../types";
 import { adapterFailureFromMessage, SEND_BUDGET_EXHAUSTED_CODE } from "../../lib/errors";
@@ -174,30 +173,18 @@ export async function executeResponsesRunTurn(
         // refuse, which is exactly what happens once earlier recovery has spent the allowance.
         const reportsOwnSends = transportState.runTurnAdapter.reportsPhysicalSends === true;
         if (!reportsOwnSends) transportState.noteRoutedAttemptSend(logCtx.usageLogInputTokens, recovery);
-        const runTurnProviderFetch = providerFetch(
-          route.provider,
-          options.codexWsRuntimeIdentity,
-          {
-            providerName: route.providerName,
-            modelId: route.modelId,
-            // runTurnAttempt acquired this logical turn's one concurrency lease above, and
-            // Cursor HTTP/1.1 spends it on RunSSE. BidiAppend and redial then pace by
-            // interval only through this stateful wrapper: a follow-up acquiring a second
-            // lease would queue behind the lease its own still-open RunSSE holds.
-            pacingSlotAcquired: true,
-            pacingSlot,
-            turnScopedPacing: true,
-          },
-        );
         await transportState.runTurnAdapter.runTurn?.(
           parsed,
           {
             headers: requestState.selectedForwardHeaders,
             abortSignal: runTurnAbort.signal,
             translatorBudget,
-            providerFetch: runTurnProviderFetch,
-            // The turn's lease, for runTurn wrappers that build their own providerFetch:
-            // the first send through that wrapper must release on body close, not here.
+            // The turn's lease, acquired above. runSelectedTurn (request-transport.ts)
+            // wraps every runTurn and builds the stateful providerFetch that spends it:
+            // Cursor HTTP/1.1 takes it on RunSSE, and BidiAppend/redial follow-ups pace
+            // by interval only while that lease (or its tracked body) is still held. A
+            // providerFetch built here would be dead: runSelectedTurn overwrites
+            // meta.providerFetch with its own before the raw adapter sees it.
             pacingSlot,
             // The only way the request budget reaches a transport the adapter owns. Without it
             // a Cursor turn's inner ladder was three physical sends the cap read as one.
