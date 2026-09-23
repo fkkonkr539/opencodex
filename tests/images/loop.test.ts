@@ -7,6 +7,7 @@ import type { AdapterEvent, OcxParsedRequest } from "../../src/types";
 import type { ImageBridgePlan, ImageCallResult } from "../../src/images/types";
 import type { ImageBridgeDeps } from "../../src/images/loop";
 import { createTestTranslatorBudget } from "../helpers/translator-budget";
+import { RequestPacingQueueOverloadError } from "../../src/providers/request-pacing";
 import { parseStreamWithProgress, type ParseStreamWithProgressOptions } from "../../src/web-search/progress-stream";
 import { TRANSLATOR_MAX_CALL_ARGUMENT_BYTES, TRANSLATOR_MAX_TURN_BYTES, translatorLiveBudgetCountForTests } from "../../src/lib/translator-budget";
 
@@ -1128,6 +1129,20 @@ describe("runWithImageBridge — runTurn adapter", () => {
     const response = await runWithImageBridge({ parsed: makeParsed(), adapter: runTurnAdapter, plan });
     const sse = await response.text();
     expect(sse).toContain("cursor blew up");
+  });
+
+  test("runTurn adapter → a pacing admission overload surfaces as a retryable 429", async () => {
+    const overloaded = new RequestPacingQueueOverloadError("demo", "queue_full", 1);
+    const rejectingAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      runTurn: async () => { throw overloaded; },
+    };
+    const response = await runWithImageBridge({ parsed: makeParsed(), adapter: rejectingAdapter, plan });
+    const sse = await response.text();
+    expect(sse).toContain(overloaded.message);
+    // The bridge encodes the 429 as a rate_limit_error response failure, so a client
+    // sees a retryable rate limit rather than a permanent-looking 502.
+    expect(sse).toContain("rate_limit_error");
   });
 
   test("runTurn adapter → SSE headers return before slow collect completes", async () => {

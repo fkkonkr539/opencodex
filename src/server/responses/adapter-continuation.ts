@@ -15,9 +15,7 @@ import {
 } from "../request-log";
 import { noteAttemptRecoveryWithheld } from "../request-log";
 import {
-  releaseProviderRequestSlot,
-  waitForProviderRequestSlot,
-  type ProviderRequestSlot,
+  withProviderRequestSlot,
 } from "../../providers/request-pacing";
 import { providerFetch, fetchWithHeaderTimeout, safeHostLabel } from "./fetch-helpers";
 import {
@@ -202,11 +200,11 @@ export function createAdapterContinuations(
       try {
         if (transportState.activeAdapter.fetchResponse) {
           transportState.noteRoutedAttemptSend(continuationEstimate, replayKind);
-          const pacingSlot: ProviderRequestSlot = await waitForProviderRequestSlot(
+          // A continuation that fails before its executor dispatches still returns its
+          // lease at this boundary; a dispatched send's tracked body keeps its own release.
+          return await withProviderRequestSlot(
             route.providerName, route.provider, nextParsed.modelId, upstream.signal,
-          );
-          try {
-            return await transportState.activeAdapter.fetchResponse(builtContinuationRequest, {
+            pacingSlot => transportState.activeAdapter.fetchResponse!(builtContinuationRequest, {
               abortSignal: upstream.signal,
               timeoutMs: connectMs,
               sendBudget: adapterDispatchBudget,
@@ -220,12 +218,8 @@ export function createAdapterContinuations(
                 providerName: route.providerName,
                 modelId: nextParsed.modelId,
               }),
-            });
-          } finally {
-            // A continuation that fails before its executor dispatches must return the
-            // lease; a dispatched send's tracked body keeps its own release.
-            releaseProviderRequestSlot(pacingSlot);
-          }
+            }),
+          );
         }
         // Same #1851 scope guard as the initial send: transient-5xx retry only for direct
         // Google AI Studio; every other adapter keeps reset-only semantics here.

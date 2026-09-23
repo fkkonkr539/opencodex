@@ -499,6 +499,30 @@ export function releaseProviderRequestSlot(slot: ProviderRequestSlot | undefined
   slot.release();
 }
 
+/**
+ * Acquire one pacing lease and return it at the boundary. The send callback runs with
+ * the lease; this helper releases it unless a tracked response body has taken ownership.
+ * A send that throws (an abort, a send-budget refusal, a build failure) or returns
+ * without ever dispatching through the executor would otherwise strand the lease for
+ * the process lifetime, and a dispatched send's tracked body keeps its own release.
+ * Centralized so every dispatch boundary shares one copy of the acquire/release pairing
+ * and a future edit cannot fork the lease lifecycle.
+ */
+export async function withProviderRequestSlot<T>(
+  providerName: string,
+  provider: OcxProviderConfig,
+  modelId: string | undefined,
+  signal: AbortSignal | undefined,
+  send: (pacingSlot: ProviderRequestSlot) => Promise<T>,
+): Promise<T> {
+  const pacingSlot = await waitForProviderRequestSlot(providerName, provider, modelId, signal);
+  try {
+    return await send(pacingSlot);
+  } finally {
+    releaseProviderRequestSlot(pacingSlot);
+  }
+ }
+
 export function providerRequestPacingStatus(
   providerName: string,
   provider: OcxProviderConfig,

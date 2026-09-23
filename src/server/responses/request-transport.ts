@@ -385,8 +385,14 @@ export async function prepareResponsesTransport(
       // A refused dispatch releases the lease inside the executor's catch, so every retry
       // acquires a fresh one instead of sending on the released handle: an uncounted send
       // would push the provider past its concurrency cap by exactly one.
+      // A caller that arrives without its turn lease still gets counted: acquiring here
+      // keeps a configured cap from being bypassed by an unpaced, uncounted first send.
+      // An admission refusal (RequestPacingQueueOverloadError) escapes to the turn's
+      // callers, which map it to the same retryable-429 contract as a send-time refusal.
       const attemptSlot = attempt === 0
-        ? incoming.pacingSlot
+        ? incoming.pacingSlot ?? await waitForProviderRequestSlot(
+          route.providerName, route.provider, route.modelId, incoming.abortSignal,
+        )
         : await waitForProviderRequestSlot(
           route.providerName, route.provider, route.modelId, incoming.abortSignal,
         );

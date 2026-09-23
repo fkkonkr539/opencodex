@@ -11,6 +11,7 @@ import {
   setProviderRequestPacingLimitsForTest,
   setProviderRequestPacingRuntimeForTest,
   waitForProviderRequestSlot,
+  withProviderRequestSlot,
   type RequestPacingRuntime,
 } from "../../src/providers/request-pacing";
 import { createAdapterPhysicalSend } from "../../src/adapters/physical-send";
@@ -749,6 +750,27 @@ describe("request pacing concurrency caps", () => {
     expect(isNonReplayableResponse(plain)).toBe(false);
     expect(isReplayRefusalResponse(plain)).toBe(false);
     await plain.text();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("withProviderRequestSlot returns the lease when the send fails before dispatch", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    await expect(withProviderRequestSlot("demo", configured, "model-a", undefined, async () => {
+      throw new Error("send refused before the wire");
+    })).rejects.toThrow("send refused before the wire");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    const next = await waitForProviderRequestSlot("demo", configured, "model-a");
+    expect(next.leased).toBe(true);
+    next.release();
+  });
+
+  test("withProviderRequestSlot leaves a body-owned lease to the body lifecycle", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const tracked = await withProviderRequestSlot("demo", configured, "model-a", undefined, async slot => {
+      return trackProviderRequestSlotBody(slot, new Response(openBodyStream()));
+    });
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    await tracked.body!.cancel("consumer done");
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 });

@@ -20,6 +20,7 @@ import { cloneProviderOpaqueToolCallMetadata } from "../responses/provider-opaqu
 import type { AttemptRecoveryKind } from "../usage/log";
 import { bridgeToResponsesSSE } from "../bridge";
 import {
+  RequestPacingQueueOverloadError,
   releaseProviderRequestSlot,
   trackProviderRequestSlotBody,
   type ProviderRequestSlot,
@@ -540,6 +541,12 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
         }
         if (collectionError) {
           if (isTranslatorBudgetExceededError(collectionError)) throw collectionError;
+          // A saturated pacing queue is the provider's 429 by another route. The fetch
+          // path surfaces upstream 429s with their status, so the runTurn path must not
+          // flatten a retryable admission refusal into a permanent-looking 502.
+          if (collectionError instanceof RequestPacingQueueOverloadError) {
+            throw new LoopError(429, collectionError.message);
+          }
           throw new LoopError(502, collectionError instanceof Error ? collectionError.message : String(collectionError));
         }
         if (timedOut) {
@@ -577,7 +584,10 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       headerDeadline.clear();
       // The previous lease belongs to a request that already settled (a reset-retry replays
       // only after the first send rejected), so returning it here cannot over-admit.
-      pacingSlot?.release();
+      // Clear the stale handle before awaiting the next one so a failed acquisition
+      // cannot leave a second release path firing on an already-released slot.
+      releaseProviderRequestSlot(pacingSlot);
+      pacingSlot = undefined;
       pacingSlot = await deps.waitForRequestSlot?.(signal);
       headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     };
