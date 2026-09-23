@@ -935,6 +935,13 @@ CLI headlessly (`claude -p`, `stream-json`) once per turn:
 - **No credential stored:** this row holds no API key, and OpenCodex never reads, copies or forwards
   a Claude token. The CLI owns the login and bills the account itself. A CLI that is not signed in
   fails the turn with a sign-in error naming the command, instead of a generic `401`.
+  Classification follows the same fact: the preset is a keyless key row (`keyOptional`), so it needs
+  no API key and no key field is offered for it. An API key saved on this row by other means is never
+  handed to the harness — key billing belongs to the `anthropic-apikey` preset.
+- **One sign-in serves the whole proxy:** the harness reads the Claude Code sign-in of the user
+  OpenCodex runs as, so every request routed through this row — from any client of the proxy —
+  spends that one Claude account. There is no per-client account, no pooling and no multiplexing;
+  giving several people their own Claude usage needs one proxy user per sign-in.
 - **Isolation:** every turn runs in a scoped child environment with no inherited `ANTHROPIC_*`
   variable (a `claude` already pointed at this proxy therefore cannot loop back into it), telemetry,
   feedback and the auto-updater disabled, and `--tools ""`, `--strict-mcp-config` plus

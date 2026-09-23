@@ -38,6 +38,10 @@ Some adapters share another adapter's routed-tool semantics while retaining inde
   makes the turn safe to run under a proxy is argument-level, and `tests/providers/claude-cli-adapter.test.ts`
   pins it: `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--no-session-persistence`,
   no permission bypass, and a child environment that carries no inherited `ANTHROPIC_*` value.
+  Its registry row is `authKind: "key"` with `keyOptional: true`, NOT `local`: the turn leaves the
+  machine for `api.anthropic.com`, and `local` (Ollama, vLLM, LM Studio) is the classification for
+  traffic that never does. `keyOptional` is the existing exemption from key enforcement, and key
+  rows are what `deriveProviderPresets` lists, so the entry needs no `dashboardPreset` flag either.
 - `cursor` stays direct because its `runTurn` transport and gated native-file fallback are distinct.
 - `devin` is direct for a related reason. It streams Cognition's
   `ApiServerService/GetChatMessage` over Connect-RPC from `runTurn` with hand-written protobuf

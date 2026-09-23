@@ -1454,11 +1454,20 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     label: "Claude Code CLI (subscription)",
     adapter: "claude-cli",
     baseUrl: "https://api.anthropic.com",
-    authKind: "local",
-    // Offered as a dashboard preset without claiming `featured` placement (the same seam cursor
-    // uses): `deriveProviderPresets` otherwise only lists featured and key rows, which would make
-    // a keyless CLI provider unreachable from the Providers page.
-    dashboardPreset: true,
+    // `key` + `keyOptional`, deliberately not `local`. "local" (Ollama, vLLM, LM Studio) means the
+    // traffic never leaves the machine and there is no credential to classify; this row reaches
+    // api.anthropic.com, so `local` misreported it wherever auth is classified — the account
+    // surface answered "local provider ... has no credentials" (`classifyAccount`,
+    // src/cli/account-api.ts) and the dashboard filed the row as a local runtime. What IS true is
+    // keyless: the CLI reads the operator's own sign-in, so `keyOptional` is the existing flag that
+    // exempts a row from key enforcement without claiming a key exists. Key rows are also what
+    // `deriveProviderPresets` lists, so this entry needs no `dashboardPreset` flag to stay
+    // reachable from the Providers page.
+    authKind: "key",
+    keyOptional: true,
+    // There is no key console for a keyless row: the link that helps an operator is the one that
+    // documents the install and sign-in this provider requires.
+    dashboardUrl: "https://docs.claude.com/en/docs/claude-code/setup",
     defaultModel: "claude-sonnet-5",
     models: [...ANTHROPIC_MODELS],
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
@@ -1466,6 +1475,6 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     reasoningEfforts: ANTHROPIC_REASONING_EFFORTS,
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
-    note: "Runs your own Claude subscription through Anthropic's official Claude Code CLI (`claude -p`). OpenCodex stores no Claude token and reads none: the CLI signs in and bills the account itself, so this row needs no API key. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). v1 disables CLI tools (--tools \"\", --strict-mcp-config) so the client retains tool ownership: text/reasoning only for now. Subscription routing authorization flagged for maintainer review.",
+    note: "Runs Claude subscription traffic through Anthropic's own harness: the official Claude Code CLI headlessly (`claude -p`), one turn per request. OpenCodex stores no Claude token, reads none and injects none — the CLI signs in and bills the account itself, which is why this row is keyless and an API key saved here never reaches the harness (use `anthropic-apikey` for key billing). The sign-in is the one of the user this proxy runs as, so every request served through this row — by any client of this proxy — spends that same account; OpenCodex neither pools nor multiplexes Claude sign-ins. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). v1 disables CLI tools (--tools \"\", --strict-mcp-config) so the client retains tool ownership: text/reasoning only for now. Subscription routing authorization flagged for maintainer review.",
   },
 ];

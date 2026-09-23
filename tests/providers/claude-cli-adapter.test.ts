@@ -12,6 +12,7 @@ import {
 import { CLAUDE_CLI_PROFILE, clearClaudeCliBinaryCache } from "../../src/adapters/claude-cli/profiles";
 import { effectiveAdapterContract, getAdapterDefinition } from "../../src/adapters/registry";
 import { PROVIDER_REGISTRY } from "../../src/providers/registry";
+import { deriveProviderPresets, providerConfigSeed } from "../../src/providers/derive";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../../src/types";
 import { createTestTranslatorBudget } from "../helpers/translator-budget";
 
@@ -79,11 +80,30 @@ describe("claude-cli is an official-harness provider, not a Messages relay", () 
     expect(entry).toBeDefined();
     expect(entry!.adapter).toBe("claude-cli");
     expect(entry!.baseUrl).toBe(CLAUDE_CLI_PROFILE.canonicalBaseUrl);
-    // No credential is stored for this row: the CLI signs in for itself.
-    expect(entry!.authKind).toBe("local");
     expect(entry!.defaultModel).toBe("claude-sonnet-5");
     expect(entry!.models).toContain(entry!.defaultModel!);
     expect(entry!.modelContextWindows?.[entry!.defaultModel!]).toBeGreaterThan(0);
+  });
+
+  test("the row is a keyless key provider, not a local runtime, and needs no dashboardPreset flag", () => {
+    const entry = PROVIDER_REGISTRY.find(candidate => candidate.id === "claude-cli")!;
+    // "local" is the Ollama / vLLM / LM Studio classification: the traffic never leaves the machine
+    // and there is no credential to classify. This row's turn leaves for api.anthropic.com, and the
+    // account surface answers from `authKind` (`classifyAccount` in src/cli/account-api.ts), where
+    // "local" claimed there were no credentials at all — for a provider whose whole point is a
+    // credential the CLI owns.
+    expect(entry.authKind).toBe("key");
+    // Keyless is expressed by `keyOptional`, the flag key enforcement already honors
+    // (src/server/auth-cors.ts, src/providers/api-key-selection.ts) without pretending a key exists.
+    expect(entry.keyOptional).toBe(true);
+    // A key row must name where its credential comes from; deriveKeyLoginMap throws without this.
+    expect(entry.dashboardUrl).toBeTruthy();
+    // They keyed a keyless row into the picker by hand. That is what the flag was for, and key rows
+    // are listed already, so it is gone rather than duplicated.
+    expect(entry.dashboardPreset).toBeUndefined();
+    expect(providerConfigSeed(entry)).toMatchObject({ authMode: "key", keyOptional: true });
+    expect(deriveProviderPresets().find(candidate => candidate.id === "claude-cli"))
+      .toMatchObject({ auth: "key", keyOptional: true });
   });
 
   test("the adapter inherits the shared coding-agent contract instead of a second wire", () => {
@@ -158,9 +178,21 @@ describe("claude-cli child environment carries no credential and no proxy destin
 
   test("keeps the home directory the CLI signs in from, and quiets its own telemetry", () => {
     const env = buildChildEnv(CLAUDE_CLI_PROFILE, "");
+    // The inherited HOME is the property the provider exists for and the one an operator must know
+    // about: the sign-in belongs to the user this proxy runs as, so every request served through
+    // this row — by any client of the proxy — spends that same Claude account.
     expect(env.HOME).toBe(process.env.HOME);
     expect(env.DISABLE_AUTOUPDATER).toBe("1");
     expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+  });
+
+  test("a key configured on the row is never handed to the harness", () => {
+    // `keyOptional` makes the row keyless without making it key-*blind*: an operator who saved an
+    // API key in the dashboard or with `ocx provider add --api-key` must not silently believe it
+    // bills the turn. Nothing layers a credential onto the child environment.
+    const env = buildChildEnv(CLAUDE_CLI_PROFILE, "sk-ant-row-key");
+    expect(JSON.stringify(env)).not.toContain("sk-ant-row-key");
+    expect(Object.keys(env).filter(name => name.startsWith("ANTHROPIC_") || name.startsWith("CLAUDE_CODE_OAUTH"))).toEqual([]);
   });
 });
 
