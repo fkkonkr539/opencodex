@@ -8,7 +8,12 @@ import {
 } from "./ws-upstream";
 import type { OcxProviderConfig } from "../../types";
 import type { WsData } from "../ws-bridge";
-import { waitForProviderRequestSlot } from "../../providers/request-pacing";
+import {
+  requestPacingMaxConcurrentRequests,
+  trackProviderRequestSlotBody,
+  waitForProviderRequestSlot,
+  type ProviderRequestSlot,
+} from "../../providers/request-pacing";
 import { withUpstreamHttpVersion } from "../../lib/upstream-http-version";
 import type { CodexWsQuotaObserver } from "./codex-ws-metadata";
 import { configuredOutboundFetch } from "../../lib/proxy-env";
@@ -54,6 +59,23 @@ function warnEgressWebsocketDowngradeOnce(providerName: string, egress: string):
     // before it reaches a log, exactly as at the management error boundary.
     `[opencodex] provider ${JSON.stringify(redactSecretString(providerName))} declares egress ${egress}; the WebSocket upstream `
     + "selects its proxy from the process environment and cannot carry a per-provider route, "
+    + "so these turns are served over HTTP/SSE.",
+  );
+}
+
+const pacingWebsocketDowngradeWarned = new Set<string>();
+/**
+ * Announce once, per provider, that a configured request-concurrency cap moved this provider
+ * off the WebSocket fast lane: the HTTP/SSE path is the only one whose body lifecycle can
+ * return the lease, and a transport change the operator did not ask for is stated, not silent.
+ */
+function warnPacingWebsocketDowngradeOnce(providerName: string): void {
+  if (pacingWebsocketDowngradeWarned.has(providerName)) return;
+  if (pacingWebsocketDowngradeWarned.size >= EGRESS_DOWNGRADE_NOTICE_LIMIT) return;
+  pacingWebsocketDowngradeWarned.add(providerName);
+  console.warn(
+    `[opencodex] provider ${JSON.stringify(redactSecretString(providerName))} configures requestPacing.maxConcurrentRequests; `
+    + "the WebSocket upstream has no response body to release that lease, "
     + "so these turns are served over HTTP/SSE.",
   );
 }
@@ -121,7 +143,7 @@ export function wantsFreshConnection(
 
 
 export interface PaceAwareFetch {
-  waitForPacing?: (signal?: AbortSignal) => Promise<void>;
+  waitForPacing?: (signal?: AbortSignal) => Promise<ProviderRequestSlot | undefined>;
   unpacedFetch?: typeof globalThis.fetch;
 }
 
@@ -187,6 +209,8 @@ export interface ProviderFetchOptions {
   modelId?: string;
   /** One pacing slot was acquired immediately before this fetch wrapper was created. */
   pacingSlotAcquired?: boolean;
+  /** The lease for that pre-acquired slot, so the first physical send can release it on body close. */
+  pacingSlot?: ProviderRequestSlot;
   /** Captured selected-account observer, attached before the native WS send. */
   onCodexWsQuota?: CodexWsQuotaObserver;
   /** Synchronous admission at actual credential dispatch, after pacing/backoff. */
@@ -271,6 +295,13 @@ export function providerFetch(
     const upstreamWebsocket = provider.upstreamWebsocket;
     if (!options.httpOnly && typeof input === "string" && init
       && shouldUseCodexWsUpstream(input, init, runtime, upstreamWebsocket)) {
+      // The concurrency lease is released when the HTTP response body closes. A WebSocket
+      // upstream hands that moment to the socket lifecycle, which has no lease to return,
+      // so a configured cap moves these turns to the HTTP/SSE path that honours it.
+      if (requestPacingMaxConcurrentRequests(provider, options.modelId) > 0) {
+        warnPacingWebsocketDowngradeOnce(providerName);
+        return httpFetch(input, init);
+      }
       const egress = egressFor(input);
       if (providerEgressIsExplicit(egress)) {
         warnEgressWebsocketDowngradeOnce(providerName, describeProviderEgressForLog(egress));
@@ -281,23 +312,36 @@ export function providerFetch(
       // request over HTTP, and dropping the provider's `upstreamHttpVersion`
       // there would silently negotiate a transport the operator ruled out.
       return codexWsUpstreamFetch(input, init, httpFetch, runtime, options.onCodexWsQuota, options.beforeDispatch, options.nativeControl,
-        () => waitForPacing(init.signal ?? undefined));
+        // A concurrency cap never reaches the WS path (it downgraded above), so the handle
+        // here is interval-only and discarding it keeps the void callback contract.
+        async () => {
+          await waitForPacing(init.signal ?? undefined);
+        });
     }
     return httpFetch(input, init);
   };
   let pacingSlotAcquired = options.pacingSlotAcquired === true;
+  let preacquiredSlot = options.pacingSlot;
   const waitForPacing = (signal?: AbortSignal) => {
     if (pacingSlotAcquired) {
       pacingSlotAcquired = false;
-      return Promise.resolve();
+      const slot = preacquiredSlot;
+      preacquiredSlot = undefined;
+      return Promise.resolve(slot);
     }
     return options.providerName
       ? waitForProviderRequestSlot(options.providerName, provider, options.modelId, signal)
-      : Promise.resolve();
+      : Promise.resolve(undefined);
   };
   const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-    await waitForPacing(init?.signal ?? undefined);
-    return unpaced(input, init);
+    const slot = await waitForPacing(init?.signal ?? undefined);
+    try {
+      const response = await unpaced(input, init);
+      return trackProviderRequestSlotBody(slot, response);
+    } catch (error) {
+      slot?.release();
+      throw error;
+    }
   };
   // The returned wrapper forwards its init down to `dispatch`, which applies the route at the
   // physical send. Adapters that hand this executor back as `provider.fetch` (Cursor does)
@@ -345,8 +389,14 @@ export function storedPoolReplayDispatchNotifier(
     { preconnect: unpacedSource.preconnect },
   ) as ProviderFetch["unpacedFetch"];
   const wrapped = async (input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
-    await executor.waitForPacing?.(init?.signal ?? undefined);
-    return unpaced!(input, init);
+    const slot = await executor.waitForPacing?.(init?.signal ?? undefined);
+    try {
+      const response = await unpaced!(input, init);
+      return trackProviderRequestSlotBody(slot, response);
+    } catch (error) {
+      slot?.release();
+      throw error;
+    }
   };
   return Object.assign(wrapped, {
     preconnect: executor.preconnect,
@@ -370,7 +420,7 @@ export async function fetchWithHeaderTimeout(
   _manualRedirect = false,
 ): Promise<Response> {
   const pacing = executor as ProviderFetch;
-  await pacing.waitForPacing?.(abortSignal);
+  const slot = await pacing.waitForPacing?.(abortSignal);
   const fetchExecutor = pacing.unpacedFetch ?? executor;
   const timeout = new AbortController();
   const timer = setTimeout(() => {
@@ -383,7 +433,7 @@ export async function fetchWithHeaderTimeout(
     headers.set("accept-encoding", "identity");
   }
   try {
-    return await fetchExecutor(url, {
+    const response = await fetchExecutor(url, {
       ...init,
       headers,
       // Never replay provider credentials or request bodies to a redirect destination.
@@ -392,6 +442,10 @@ export async function fetchWithHeaderTimeout(
       signal: AbortSignal.any([abortSignal, timeout.signal]),
       timeout: 0,
     });
+    return trackProviderRequestSlotBody(slot, response);
+  } catch (error) {
+    slot?.release();
+    throw error;
   } finally {
     clearTimeout(timer);
   }

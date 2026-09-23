@@ -486,6 +486,32 @@ describe("runWithImageBridge", () => {
     expect(buildRequestCalls).toBe(1);
   });
 
+  test("a rejecting on429 hook cancels the tracked body so its pacing lease returns", async () => {
+    let releases = 0;
+    let sends = 0;
+    const rateLimitedAdapter: ProviderAdapter = {
+      ...mockAdapter,
+      fetchResponse: async () => {
+        sends += 1;
+        return new Response(JSON.stringify({ error: { message: "rate limited" } }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    };
+    streamQueue = [[{ type: "text_delta" as const, text: "unreached" }, { type: "done" as const }]];
+    const response = await runWithImageBridge({
+      parsed: makeParsed(),
+      adapter: rateLimitedAdapter,
+      plan,
+      waitForRequestSlot: async () => ({ leased: true, release: () => { releases += 1; } }),
+      on429: () => { throw new Error("rotation exploded"); },
+    });
+    expect(response.ok).toBe(false);
+    expect(sends).toBe(1);
+    expect(releases).toBe(1);
+  });
+
   test("retry wait longer than the stall budget still succeeds (heartbeats feed the watchdog)", async () => {
     let sends = 0;
     const retryingAdapter: ProviderAdapter = {

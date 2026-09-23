@@ -13,7 +13,11 @@ import {
   adapterResponseReachedServingTerminal,
 } from "./core-replay";
 import { noteAttemptRecoveryWithheld, sealRequestAttemptIdentity, recordAttemptCredentialSource } from "../request-log";
-import { waitForProviderRequestSlot, RequestPacingQueueOverloadError } from "../../providers/request-pacing";
+import {
+  waitForProviderRequestSlot,
+  RequestPacingQueueOverloadError,
+  type ProviderRequestSlot,
+} from "../../providers/request-pacing";
 import type { AdapterEventQueue } from "../../adapters/run-turn-queue";
 import type { AttemptRecoveryKind } from "../../usage/log";
 import { providerFetch } from "./fetch-helpers";
@@ -135,8 +139,11 @@ export async function executeResponsesRunTurn(
     };
     // Initial admission must settle before the streaming Response commits HTTP 200.
     // Let the outer Responses facade preserve the local retryable-429 contract.
+    let initialPacingSlot: ProviderRequestSlot | undefined;
     try {
-      await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
+      initialPacingSlot = await waitForProviderRequestSlot(
+        route.providerName, route.provider, route.modelId, runTurnAbort.signal,
+      );
     } catch (error) {
       cleanupRunTurnAbort();
       queue.close();
@@ -151,10 +158,14 @@ export async function executeResponsesRunTurn(
       targetQueue: AdapterEventQueue,
       recovery?: AttemptRecoveryKind,
       pacingSlotAcquired = false,
+      preacquiredSlot?: ProviderRequestSlot,
     ): Promise<void> => {
+      let pacingSlot = preacquiredSlot;
       try {
         if (!pacingSlotAcquired) {
-          await waitForProviderRequestSlot(route.providerName, route.provider, route.modelId, runTurnAbort.signal);
+          pacingSlot = await waitForProviderRequestSlot(
+            route.providerName, route.provider, route.modelId, runTurnAbort.signal,
+          );
         }
         await refreshRunTurnSelection();
         // An adapter that reports its own sends accounts for the first one at the boundary that
@@ -172,6 +183,7 @@ export async function executeResponsesRunTurn(
             // Cursor HTTP/1.1 consumes it for RunSSE; every BidiAppend and redial then waits on
             // the same provider queue through this stateful wrapper.
             pacingSlotAcquired: true,
+            pacingSlot,
           },
         );
         await transportState.runTurnAdapter.runTurn?.(
@@ -227,9 +239,13 @@ export async function executeResponsesRunTurn(
           logCtx.conversationId = normalizeLogConversationId(parsed._cursorConversationId);
         }
         targetQueue.close();
+        // The attempt owns its lease: an HTTP transport released it when the body closed,
+        // and a bidirectional transport that never reached HTTP must not hold it past the
+        // turn. release() is idempotent, so the second call is a no-op on the HTTP path.
+        pacingSlot?.release();
       }
     };
-    const runTurn = async (): Promise<void> => runTurnAttempt(queue, undefined, true);
+    const runTurn = async (): Promise<void> => runTurnAttempt(queue, undefined, true, initialPacingSlot);
     const rotateRunTurnAdapterOnPreflight429 = async (
       error: Extract<AdapterEvent, { type: "error" }>,
     ): Promise<boolean> => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  trackProviderRequestSlotBody,
   providerRequestPacingStatus,
   reconcileProviderRequestPacing,
   RequestPacingQueueOverloadError,
@@ -13,6 +14,7 @@ import {
 import { providerFetch } from "../../src/server/responses/fetch-helpers";
 import { fetchWithHeaderTimeout } from "../../src/server/responses/fetch-helpers";
 import { requestPacingOverloadResponse } from "../../src/server/responses/pacing-overload";
+import { requestPacingConfigError } from "../../src/config/schema/leaf-validators";
 import type { OcxProviderConfig } from "../../src/types";
 
 afterEach(() => resetProviderRequestPacingForTest());
@@ -321,5 +323,218 @@ describe("provider request pacing queue", () => {
     const res = await fetchWithHeaderTimeout("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent", {}, new AbortController().signal, 500, false, executor);
     expect(res.status).toBe(200);
     expect(pacingWaited).toBe(1);
+  });
+});
+
+describe("request pacing concurrency caps", () => {
+  function openBodyStream(): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("chunk"));
+      },
+    });
+  }
+
+  function trackedFetch(started: string[]): typeof globalThis.fetch {
+    return Object.assign(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      started.push(String(input));
+      return new Response(openBodyStream(), { status: 200 });
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+  }
+
+  test("caps in-flight requests per provider until a response body completes", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const started: string[] = [];
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 2 }),
+      fetch: trackedFetch(started),
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const send = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    const first = await send("https://example.test/one");
+    const second = await send("https://example.test/two");
+    const third = send("https://example.test/three");
+    expect(started).toEqual(["https://example.test/one", "https://example.test/two"]);
+    const status = providerRequestPacingStatus("demo", configured);
+    expect(status.inFlight).toBe(2);
+    expect(status.queued).toBe(1);
+    await first.body!.cancel();
+    const thirdResponse = await third;
+    expect(started).toHaveLength(3);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(2);
+    await second.body!.cancel();
+    await thirdResponse.body!.cancel();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a model override tightens the provider cap while other models keep it", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const started: string[] = [];
+    const configured = {
+      ...provider({
+        enabled: true,
+        maxConcurrentRequests: 3,
+        models: { narrow: { maxConcurrentRequests: 1 } },
+      }),
+      fetch: trackedFetch(started),
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const send = (modelId: string) => providerFetch(configured, undefined, { providerName: "demo", modelId });
+    const narrowFirst = await send("narrow")("https://example.test/narrow-1");
+    const narrowSecond = send("narrow")("https://example.test/narrow-2");
+    const wide = await send("wide")("https://example.test/wide");
+    expect(started).toEqual(["https://example.test/narrow-1", "https://example.test/wide"]);
+    await narrowFirst.body!.cancel();
+    const narrowSecondResponse = await narrowSecond;
+    expect(started).toHaveLength(3);
+    await wide.body!.cancel();
+    await narrowSecondResponse.body!.cancel();
+  });
+
+  test("a null-body response releases the lease immediately", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const started: string[] = [];
+    const fetchImpl = Object.assign(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      started.push(String(input));
+      return new Response(null, { status: 204 });
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: fetchImpl,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const send = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    await send("https://example.test/one");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    await send("https://example.test/two");
+    expect(started).toHaveLength(2);
+  });
+
+  test("a failed send releases the lease for queued requests", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const started: string[] = [];
+    let calls = 0;
+    const fetchImpl = Object.assign(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      calls += 1;
+      if (calls === 1) throw new Error("upstream refused");
+      started.push(String(input));
+      return new Response(null, { status: 204 });
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: fetchImpl,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const send = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    await expect(send("https://example.test/one")).rejects.toThrow("upstream refused");
+    await send("https://example.test/two");
+    expect(started).toEqual(["https://example.test/two"]);
+  });
+
+  test("rejects newest admission when in-flight leases saturate the bounded queue", async () => {
+    setProviderRequestPacingLimitsForTest({ maxQueueDepth: 2 });
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const inFlight = await waitForProviderRequestSlot("demo", configured, "model-a");
+    const controller = new AbortController();
+    const queued = [
+      waitForProviderRequestSlot("demo", configured, "model-a"),
+      waitForProviderRequestSlot("demo", configured, "model-a", controller.signal),
+    ];
+    expect(providerRequestPacingStatus("demo", configured).queued).toBe(2);
+    await expect(waitForProviderRequestSlot("demo", configured, "model-a")).rejects.toMatchObject({
+      name: "RequestPacingQueueOverloadError",
+      reason: "queue_full",
+      providerName: "demo",
+    });
+    inFlight.release();
+    await queued[0];
+    controller.abort();
+    await Promise.allSettled(queued);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+  });
+
+  test("fetchWithHeaderTimeout releases the lease when the tracked body completes", async () => {
+    const clock = fakePacingClock();
+    setProviderRequestPacingRuntimeForTest(clock.runtime);
+    const started: string[] = [];
+    const fetchImpl = Object.assign(async (input: Parameters<typeof globalThis.fetch>[0]) => {
+      started.push(String(input));
+      return new Response("ok");
+    }, { preconnect() {} }) as typeof globalThis.fetch;
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: fetchImpl,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const executor = providerFetch(configured, undefined, { providerName: "demo", modelId: "model-a" });
+    const first = await fetchWithHeaderTimeout(
+      "https://example.test/one",
+      { method: "GET" },
+      new AbortController().signal,
+      1_000,
+      false,
+      executor,
+    );
+    expect(await first.text()).toBe("ok");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    const second = await fetchWithHeaderTimeout(
+      "https://example.test/two",
+      { method: "GET" },
+      new AbortController().signal,
+      1_000,
+      false,
+      executor,
+    );
+    await second.text();
+    expect(started).toHaveLength(2);
+  });
+
+  test("status reports model-only concurrency caps as in-flight", async () => {
+    const configured = provider({ enabled: true, models: { narrow: { maxConcurrentRequests: 1 } } });
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    const first = await waitForProviderRequestSlot("demo", configured, "narrow");
+    const second = waitForProviderRequestSlot("demo", configured, "narrow");
+    const blocked = providerRequestPacingStatus("demo", configured);
+    expect(blocked.inFlight).toBe(1);
+    expect(blocked.queued).toBe(1);
+    first.release();
+    const secondSlot = await second;
+    secondSlot.release();
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+
+  test("a source read settling after consumer cancel stays inert and released", async () => {
+    const configured = provider({ enabled: true, maxConcurrentRequests: 1 });
+    const slot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    let settleSourcePull: (() => void) | undefined;
+    const source = new ReadableStream<Uint8Array>({
+      pull: () => new Promise<void>(resolve => { settleSourcePull = resolve; }),
+    });
+    const response = trackProviderRequestSlotBody(slot, new Response(source));
+    const reader = response.body!.getReader();
+    const pendingRead = reader.read();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await reader.cancel("consumer closed the exchange");
+    settleSourcePull?.();
+    await pendingRead.then(() => undefined, () => undefined);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+  });
+});
+
+describe("requestPacingConfigError concurrency validation", () => {
+  test("accepts concurrency-only pacing at provider and model level", () => {
+    expect(requestPacingConfigError({ enabled: true, maxConcurrentRequests: 5 })).toBeNull();
+    expect(requestPacingConfigError({
+      enabled: true,
+      requestsPerMinute: 40,
+      models: { "zai/glm-5.3": { maxConcurrentRequests: 2 } },
+    })).toBeNull();
+    expect(requestPacingConfigError({ enabled: true, models: { busy: { maxConcurrentRequests: 1 } } })).toBeNull();
+  });
+
+  test("rejects invalid concurrency caps", () => {
+    expect(requestPacingConfigError({ enabled: true, maxConcurrentRequests: 0 })).toMatch(/maxConcurrentRequests/);
+    expect(requestPacingConfigError({ enabled: true, maxConcurrentRequests: 1.5 })).toMatch(/maxConcurrentRequests/);
+    expect(requestPacingConfigError({ enabled: true, maxConcurrentRequests: 1001 })).toMatch(/maxConcurrentRequests/);
+    expect(requestPacingConfigError({ enabled: true, maxConcurrentRequest: 2 })).toMatch(/maxConcurrentRequests/);
   });
 });

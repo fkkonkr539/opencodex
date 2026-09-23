@@ -14,7 +14,7 @@ import {
   recordAttemptCredentialSource,
 } from "../request-log";
 import { noteAttemptRecoveryWithheld } from "../request-log";
-import { waitForProviderRequestSlot } from "../../providers/request-pacing";
+import { waitForProviderRequestSlot, type ProviderRequestSlot } from "../../providers/request-pacing";
 import { providerFetch, fetchWithHeaderTimeout, safeHostLabel } from "./fetch-helpers";
 import {
   transientRetryPolicyFor,
@@ -198,7 +198,9 @@ export function createAdapterContinuations(
       try {
         if (transportState.activeAdapter.fetchResponse) {
           transportState.noteRoutedAttemptSend(continuationEstimate, replayKind);
-          await waitForProviderRequestSlot(route.providerName, route.provider, nextParsed.modelId, upstream.signal);
+          const pacingSlot: ProviderRequestSlot = await waitForProviderRequestSlot(
+            route.providerName, route.provider, nextParsed.modelId, upstream.signal,
+          );
           return await transportState.activeAdapter.fetchResponse(builtContinuationRequest, {
             abortSignal: upstream.signal,
             timeoutMs: connectMs,
@@ -208,6 +210,7 @@ export function createAdapterContinuations(
             stream: nextParsed.stream,
             executor: providerFetch(route.provider, options.codexWsRuntimeIdentity, {
               pacingSlotAcquired: true,
+              pacingSlot,
               dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
               providerName: route.providerName,
               modelId: nextParsed.modelId,

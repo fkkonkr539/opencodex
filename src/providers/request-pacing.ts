@@ -33,9 +33,11 @@ interface Waiter {
   modelId?: string;
   providerIntervalMs: number;
   modelIntervalMs: number;
+  providerMaxConcurrent: number;
+  modelMaxConcurrent: number;
   queuedAt: number;
   signal?: AbortSignal;
-  resolve: () => void;
+  resolve: (slot: ProviderRequestSlot) => void;
   reject: (reason: unknown) => void;
   abort?: () => void;
 }
@@ -44,10 +46,31 @@ interface ProviderPacer {
   queue: Waiter[];
   providerNextStartAt: number;
   modelNextStartAt: Map<string, number>;
+  providerInFlight: number;
+  modelInFlight: Map<string, number>;
   timer?: unknown;
   lastStartedAt?: number;
   lastModelId?: string;
 }
+
+/**
+ * Lease returned by waitForProviderRequestSlot. Inert unless the provider (or the
+ * request model override) sets maxConcurrentRequests; then release() returns the
+ * concurrency slot when the upstream request finishes, whether that is body completion,
+ * body cancellation, or a send that never produced a response.
+ */
+export interface ProviderRequestSlot {
+  /**
+   * True only when this slot holds a concurrency lease whose release must follow the
+   * upstream body lifecycle. Interval-only slots stay inert so response objects keep
+   * their identity through the fetch path.
+   */
+  readonly leased: boolean;
+  /** Idempotent. Safe to call from body completion, cancellation, and error paths alike. */
+  release(): void;
+}
+
+const inertProviderRequestSlot: ProviderRequestSlot = { leased: false, release() {} };
 
 export interface RequestPacingRuntime {
   now: () => number;
@@ -61,6 +84,7 @@ export interface ProviderRequestPacingStatus {
   enabled: boolean;
   queued: number;
   nextSlotInMs: number;
+  inFlight?: number;
   lastStartedAt?: number;
   lastModelId?: string;
 }
@@ -90,6 +114,12 @@ function normalizedInterval(rule: RequestPacingRule | undefined): number {
   return Math.max(rpmInterval, fixedInterval);
 }
 
+function normalizedMaxConcurrent(rule: RequestPacingRule | undefined): number {
+  return typeof rule?.maxConcurrentRequests === "number" && rule.maxConcurrentRequests > 0
+    ? rule.maxConcurrentRequests
+    : 0;
+}
+
 export function requestPacingIntervalMs(provider: OcxProviderConfig, modelId?: string): number {
   const policy = provider.requestPacing;
   if (!policy?.enabled) return 0;
@@ -100,13 +130,24 @@ export function requestPacingIntervalMs(provider: OcxProviderConfig, modelId?: s
 function requestPacingIntervals(provider: OcxProviderConfig, modelId?: string): {
   providerIntervalMs: number;
   modelIntervalMs: number;
+  providerMaxConcurrent: number;
+  modelMaxConcurrent: number;
 } {
   const policy = provider.requestPacing;
-  if (!policy?.enabled) return { providerIntervalMs: 0, modelIntervalMs: 0 };
+  if (!policy?.enabled) {
+    return { providerIntervalMs: 0, modelIntervalMs: 0, providerMaxConcurrent: 0, modelMaxConcurrent: 0 };
+  }
   return {
     providerIntervalMs: normalizedInterval(policy),
     modelIntervalMs: modelId ? normalizedInterval(policy.models?.[modelId]) : 0,
+    providerMaxConcurrent: normalizedMaxConcurrent(policy),
+    modelMaxConcurrent: modelId ? normalizedMaxConcurrent(policy.models?.[modelId]) : 0,
   };
+}
+
+export function requestPacingMaxConcurrentRequests(provider: OcxProviderConfig, modelId?: string): number {
+  const limits = requestPacingIntervals(provider, modelId);
+  return Math.max(limits.providerMaxConcurrent, limits.modelMaxConcurrent);
 }
 
 function waiterReadyAt(state: ProviderPacer, modelId: string | undefined): number {
@@ -118,6 +159,33 @@ function waiterReadyAt(state: ProviderPacer, modelId: string | undefined): numbe
 
 function pacingRetryAfterSeconds(state: ProviderPacer, modelId: string | undefined, now: number): number {
   return Math.max(1, Math.ceil(Math.max(0, waiterReadyAt(state, modelId) - now) / 1000));
+}
+
+function makeProviderRequestSlot(providerName: string, state: ProviderPacer, waiter: Waiter): ProviderRequestSlot {
+  let released = false;
+  const leased = waiter.providerMaxConcurrent > 0 || waiter.modelMaxConcurrent > 0;
+  return {
+    leased,
+    release() {
+      if (released) return;
+      released = true;
+      if (waiter.providerMaxConcurrent > 0 && state.providerInFlight > 0) state.providerInFlight -= 1;
+      if (waiter.modelId && waiter.modelMaxConcurrent > 0) {
+        const current = state.modelInFlight.get(waiter.modelId) ?? 0;
+        if (current <= 1) state.modelInFlight.delete(waiter.modelId);
+        else state.modelInFlight.set(waiter.modelId, current - 1);
+      }
+      runtime.enqueueMicrotask(() => {
+        // A pending wake-up timer makes runQueue defer to it, but the lease that just
+        // returned may admit a waiter the timer was never scheduled for, so take over.
+        if (state.timer) {
+          runtime.clearTimer(state.timer);
+          state.timer = undefined;
+        }
+        runQueue(providerName, state);
+      });
+    },
+  };
 }
 
 function rejectExpiredWaiters(providerName: string, state: ProviderPacer, now: number): void {
@@ -162,6 +230,9 @@ function runQueue(providerName: string, state: ProviderPacer): void {
 
   const providerReadyAt = Math.max(now, state.providerNextStartAt);
   const waiterIndex = state.queue.findIndex(waiter => {
+    if (waiter.providerMaxConcurrent > 0 && state.providerInFlight >= waiter.providerMaxConcurrent) return false;
+    if (waiter.modelId && waiter.modelMaxConcurrent > 0
+      && (state.modelInFlight.get(waiter.modelId) ?? 0) >= waiter.modelMaxConcurrent) return false;
     const modelReadyAt = waiter.modelId ? (state.modelNextStartAt.get(waiter.modelId) ?? 0) : 0;
     return Math.max(providerReadyAt, modelReadyAt) <= now;
   });
@@ -171,8 +242,12 @@ function runQueue(providerName: string, state: ProviderPacer): void {
       const modelReadyAt = waiter.modelId ? (state.modelNextStartAt.get(waiter.modelId) ?? 0) : 0;
       const readyAt = Math.max(providerReadyAt, modelReadyAt);
       const expiresAt = waiter.queuedAt + maxQueueAgeMs;
-      earliestAt = Math.min(earliestAt, readyAt, expiresAt);
+      // A waiter whose start time already passed is blocked on an in-flight lease; its release
+      // re-runs this queue through a microtask, so the timer only needs its expiry backstop.
+      // Scheduling for its readyAt (in the past) would spin the timer on every empty pass.
+      earliestAt = Math.min(earliestAt, readyAt <= now ? Number.POSITIVE_INFINITY : readyAt, expiresAt);
     }
+    if (!Number.isFinite(earliestAt)) return;
     const delayMs = Math.max(0, earliestAt - now);
     state.timer = runtime.setTimer(() => {
       state.timer = undefined;
@@ -190,7 +265,11 @@ function runQueue(providerName: string, state: ProviderPacer): void {
   if (waiter.modelId && waiter.modelIntervalMs > 0) {
     state.modelNextStartAt.set(waiter.modelId, startedAt + waiter.modelIntervalMs);
   }
-  waiter.resolve();
+  if (waiter.providerMaxConcurrent > 0) state.providerInFlight += 1;
+  if (waiter.modelId && waiter.modelMaxConcurrent > 0) {
+    state.modelInFlight.set(waiter.modelId, (state.modelInFlight.get(waiter.modelId) ?? 0) + 1);
+  }
+  waiter.resolve(makeProviderRequestSlot(providerName, state, waiter));
   runtime.enqueueMicrotask(() => runQueue(providerName, state));
 }
 
@@ -199,13 +278,17 @@ export async function waitForProviderRequestSlot(
   provider: OcxProviderConfig,
   modelId?: string,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<ProviderRequestSlot> {
   const intervals = requestPacingIntervals(provider, modelId);
-  if (Math.max(intervals.providerIntervalMs, intervals.modelIntervalMs) <= 0) return;
+  const paced = Math.max(intervals.providerIntervalMs, intervals.modelIntervalMs) > 0
+    || intervals.providerMaxConcurrent > 0
+    || intervals.modelMaxConcurrent > 0;
+  if (!paced) return inertProviderRequestSlot;
   if (signal?.aborted) throw abortReason(signal);
 
   const state = pacers.get(providerName) ?? {
     queue: [], providerNextStartAt: 0, modelNextStartAt: new Map<string, number>(),
+    providerInFlight: 0, modelInFlight: new Map<string, number>(),
   };
   pacers.set(providerName, state);
 
@@ -225,8 +308,15 @@ export async function waitForProviderRequestSlot(
     );
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const waiter: Waiter = { modelId, ...intervals, queuedAt: runtime.now(), signal, resolve, reject };
+  return await new Promise<ProviderRequestSlot>((resolve, reject) => {
+    const waiter: Waiter = {
+      modelId,
+      ...intervals,
+      queuedAt: runtime.now(),
+      signal,
+      resolve,
+      reject,
+    };
     waiter.abort = () => {
       const index = state.queue.indexOf(waiter);
       if (index >= 0) state.queue.splice(index, 1);
@@ -252,6 +342,68 @@ export async function waitForProviderRequestSlot(
   });
 }
 
+/**
+ * Tie a pacing slot lease to an upstream response body: the lease is released when the
+ * body completes, errors, or is cancelled by the consumer. A null body (204/304/HEAD)
+ * means the exchange is already finished, so the lease returns immediately.
+ *
+ * Caveat: a caller that neither reads nor cancels the returned body keeps the lease; the
+ * abort paths that cancel abandoned streams are the backstop. The returned Response
+ * preserves status, statusText, and headers.
+ */
+export function trackProviderRequestSlotBody(
+  slot: ProviderRequestSlot | undefined,
+  response: Response,
+): Response {
+  // An unleased slot has nothing to return on body close, and rewrapping the Response
+  // would break identity-based markers (the eager WS relay registry is a WeakSet).
+  if (!slot?.leased) return response;
+  if (!response.body) {
+    slot.release();
+    return response;
+  }
+  const source = response.body;
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    slot.release();
+  };
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancelled = false;
+  const tracked = new ReadableStream<Uint8Array>({
+    pull: async controller => {
+      reader ??= source.getReader();
+      try {
+        const { done, value } = await reader.read();
+        // A consumer cancel while this read was pending resolves it (done or a late chunk);
+        // touching the cancelled controller would throw from the pull algorithm.
+        if (cancelled) return;
+        if (done) {
+          controller.close();
+          release();
+          return;
+        }
+        controller.enqueue(value);
+      } catch (error) {
+        if (cancelled) return;
+        release();
+        controller.error(error);
+      }
+    },
+    cancel: reason => {
+      cancelled = true;
+      release();
+      return (reader ?? source).cancel(reason);
+    },
+  });
+  return new Response(tracked, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 export function providerRequestPacingStatus(
   providerName: string,
   provider: OcxProviderConfig,
@@ -266,11 +418,21 @@ export function providerRequestPacingStatus(
     }
     if (Number.isFinite(earliestQueuedSlotAt)) nextSlotAt = earliestQueuedSlotAt;
   }
+  const providerConcurrencyCap = requestPacingMaxConcurrentRequests(provider);
+  const anyConcurrencyCap = providerConcurrencyCap > 0
+    || Object.values(provider.requestPacing?.models ?? {}).some(rule => normalizedMaxConcurrent(rule) > 0);
   return {
     provider: providerName,
     enabled: provider.requestPacing?.enabled === true,
     queued: state?.queue.length ?? 0,
     nextSlotInMs: Math.max(0, Math.ceil(nextSlotAt - now)),
+    // A provider cap counts every paced send in providerInFlight; model-only caps keep
+    // providerInFlight at zero, so report the per-model sum for those providers instead.
+    ...(anyConcurrencyCap ? {
+      inFlight: providerConcurrencyCap > 0
+        ? state?.providerInFlight ?? 0
+        : [...(state?.modelInFlight.values() ?? [])].reduce((sum, count) => sum + count, 0),
+    } : {}),
     ...(state?.lastStartedAt !== undefined ? { lastStartedAt: state.lastStartedAt } : {}),
     ...(state?.lastModelId ? { lastModelId: state.lastModelId } : {}),
   };
