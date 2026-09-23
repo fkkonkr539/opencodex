@@ -552,6 +552,9 @@ describe("request pacing concurrency caps", () => {
       cancel: () => { cancelled = true; },
     });
     trackProviderRequestSlotBody(slot, new Response(source));
+    // Let the stream's start and pull algorithms run first, as they do in production
+    // before any timer fires; with zero capacity and no reader, pull must not run.
+    await new Promise(resolve => setTimeout(resolve, 0));
     clock.advanceBy(REQUEST_PACING_UNCONSUMED_BODY_MS - 1);
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
     clock.advanceBy(1);
@@ -643,6 +646,51 @@ describe("request pacing concurrency caps", () => {
     expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
     const next = await waitForProviderRequestSlot("demo", configured, "model-a");
     next.release();
+  });
+
+  test("a retried send after a refused dispatch re-acquires a real lease", async () => {
+    const configured = {
+      ...provider({ enabled: true, maxConcurrentRequests: 1 }),
+      fetch: (async () => new Response(openBodyStream())) as typeof fetch,
+    } as OcxProviderConfig & { fetch: typeof globalThis.fetch };
+    const initial = await waitForProviderRequestSlot("demo", configured, "model-a");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    // Attempt 0: the selection guard refuses the first dispatch inside the executor,
+    // and the executor's catch releases the pre-acquired lease before rethrowing.
+    let selectionCurrent = false;
+    const firstExecutor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+      pacingSlot: initial,
+      turnScopedPacing: true,
+      beforeDispatch: () => {
+        if (!selectionCurrent) throw new Error("Account selection changed before the first turn dispatch");
+      },
+    });
+    await expect(firstExecutor("https://example.test/runsse"))
+      .rejects.toThrow("Account selection changed before the first turn dispatch");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
+    // The transport's retry must acquire a fresh lease rather than resend on the
+    // released handle: the retried send counts against the cap while its body is open.
+    const retrySlot = await waitForProviderRequestSlot("demo", configured, "model-a");
+    expect(retrySlot.leased).toBe(true);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    selectionCurrent = true;
+    const retryExecutor = providerFetch(configured, undefined, {
+      providerName: "demo",
+      modelId: "model-a",
+      pacingSlotAcquired: true,
+      pacingSlot: retrySlot,
+      turnScopedPacing: true,
+    });
+    const retried = await retryExecutor("https://example.test/runsse");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    // Turn boundary: the tracked body still owns the lease, so the release is skipped.
+    releaseProviderRequestSlot(retrySlot);
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(1);
+    await retried.body!.cancel("run finished");
+    expect(providerRequestPacingStatus("demo", configured).inFlight).toBe(0);
   });
 
   test("wrapping a leased response preserves identity-based replay markers", async () => {

@@ -34,6 +34,10 @@ import {
   noteGenericPoolSelection,
 } from "../../oauth/generic-account-failover";
 import { stampOAuthAccountLabel, usesApiKeyAccount } from "../../providers/label";
+import {
+  releaseProviderRequestSlot,
+  waitForProviderRequestSlot,
+} from "../../providers/request-pacing";
 import { resolveProviderTransport } from "../../providers/xai-transport";
 import { resolveCopilotApiBaseUrl } from "../../oauth/github-copilot";
 import {
@@ -378,9 +382,17 @@ export async function prepareResponsesTransport(
       // lease (IncomingMeta.pacingSlot). The first attempt's send releases it when that
       // response body closes; subsequent physical messages pace by interval only through
       // this stateful wrapper, so a follow-up never queues behind its own turn's lease.
+      // A refused dispatch releases the lease inside the executor's catch, so every retry
+      // acquires a fresh one instead of sending on the released handle: an uncounted send
+      // would push the provider past its concurrency cap by exactly one.
+      const attemptSlot = attempt === 0
+        ? incoming.pacingSlot
+        : await waitForProviderRequestSlot(
+          route.providerName, route.provider, route.modelId, incoming.abortSignal,
+        );
       const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
         providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
-        pacingSlot: incoming.pacingSlot,
+        pacingSlot: attemptSlot,
         turnScopedPacing: true,
         beforeDispatch: () => {
           if (sent) return;
@@ -393,9 +405,13 @@ export async function prepareResponsesTransport(
         },
       });
       try {
-        await run(requestParsed, { ...incoming, providerFetch: fetch }, event => { if (!refused) emit(event); });
+        await run(requestParsed, { ...incoming, pacingSlot: attemptSlot, providerFetch: fetch }, event => { if (!refused) emit(event); });
       } catch (error) {
         if (!refused) throw error;
+      } finally {
+        // A body-tracked send keeps its lease until the body closes; anything else
+        // (a refusal already released it, or the turn never reached HTTP) returns here.
+        releaseProviderRequestSlot(attemptSlot);
       }
       if (!refused) return;
       // The adapter may map the guard's exception to an error event. Neither that

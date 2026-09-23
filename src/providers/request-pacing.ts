@@ -462,6 +462,12 @@ export function trackProviderRequestSlotBody(
       release();
       return (reader ?? source).cancel(reason);
     },
+  }, {
+    // A default-count stream pulls once at construction with no reader attached, which
+    // would mark the body consumed and disarm the deadline before any real consumer
+    // arrives. Zero capacity keeps pull consumer-driven: the first read arms nothing
+    // until a reader actually asks for bytes.
+    highWaterMark: 0,
   });
   const wrapped = new Response(tracked, {
     status: response.status,
