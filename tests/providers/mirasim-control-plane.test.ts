@@ -379,7 +379,7 @@ describe("Mirasim signed transport", () => {
       },
     );
     const model = result.models.find(row => row.id === "gpt-5.6-sol");
-    expect(model?.displayName).toBe("Sol account live");
+    expect(model?.displayName).toBe("Static Sol");
     expect(model?.contextWindow).toBe(400_000);
     expect(model?.maxInputTokens).toBe(400_000);
     expect(model?.contextCapped).toBe(true);
@@ -398,7 +398,7 @@ describe("Mirasim signed transport", () => {
       },
     );
     const cachedModel = cached.models.find(row => row.id === "gpt-5.6-sol");
-    expect(cachedModel?.displayName).toBe("Sol account live");
+    expect(cachedModel?.displayName).toBe("Static Sol");
     expect(cachedModel?.contextWindow).toBe(400_000);
     expect(cachedModel?.maxOutputTokens).toBe(150_000);
     expect(cachedModel?.reasoningEfforts).toEqual(["low", "max"]);

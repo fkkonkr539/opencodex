@@ -303,8 +303,9 @@ export async function fetchProviderModelsWithAuth(
             )
           : undefined;
         return {
+          // `hinted` already carries the live roster label as its fallback; an operator's
+          // modelDisplayNames entry (what the dashboard shows and edits) must win over it.
           ...hinted,
-          ...(model.displayName ? { displayName: model.displayName } : {}),
           ...(liveWindow ? {
             contextWindow: liveWindow,
             maxInputTokens: liveWindow,
