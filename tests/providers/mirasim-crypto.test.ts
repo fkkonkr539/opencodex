@@ -4,7 +4,7 @@ import {
   canonicalMirasimSignaturePayload,
   sealMirasimRelayMetadata,
   signMirasimRequest,
-} from "../src/adapters/mirasim/crypto";
+} from "../../src/adapters/mirasim/crypto";
 
 const ED25519_PKCS8_SEED_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
