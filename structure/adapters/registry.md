@@ -30,6 +30,14 @@ Some adapters share another adapter's routed-tool semantics while retaining inde
   The inherited contract includes Meta Muse's host-gated 64-character tool-name alias when the
   constructed send URL is `api.meta.ai` (`src/responses/muse-tool-name-alias.ts`).
 - `mimo-free` inherits the `openai-chat` contract.
+- `claude-cli` inherits the `codebuddy` contract. Claude Code speaks the same stream-json
+  protocol this repository already parses for CodeBuddy and Qoder, so the wire is inherited and the
+  family module (`src/adapters/claude-cli/`) supplies only its own arguments and child environment.
+  That profile is the first credentialless one: it omits `tokenEnv`, the CLI reads the operator's
+  own Claude Code sign-in, and the turn neither requires nor injects an API key. Everything that
+  makes the turn safe to run under a proxy is argument-level, and `tests/providers/claude-cli-adapter.test.ts`
+  pins it: `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--no-session-persistence`,
+  no permission bypass, and a child environment that carries no inherited `ANTHROPIC_*` value.
 - `cursor` stays direct because its `runTurn` transport and gated native-file fallback are distinct.
 - `devin` is direct for a related reason. It streams Cognition's
   `ApiServerService/GetChatMessage` over Connect-RPC from `runTurn` with hand-written protobuf

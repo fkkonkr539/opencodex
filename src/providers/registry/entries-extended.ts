@@ -108,6 +108,12 @@ import {
   STEPFUN_MODEL_INPUT_MODALITIES,
   STEPFUN_NO_VISION_MODELS,
   STEPFUN_REASONING_EFFORTS,
+  ANTHROPIC_MODELS,
+  ANTHROPIC_MODEL_CONTEXT_WINDOWS,
+  ANTHROPIC_MODEL_INPUT_MODALITIES,
+  ANTHROPIC_MODEL_REASONING_EFFORTS,
+  ANTHROPIC_REASONING_EFFORTS,
+  ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
 } from "./model-seeds";
 
 export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
@@ -1431,5 +1437,35 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     noVisionModels: STEPFUN_NO_VISION_MODELS,
     reasoningEfforts: STEPFUN_REASONING_EFFORTS,
     note: "StepFun (阶跃星辰) official OpenAI-compatible API.",
+  },
+  {
+    // Official Claude Code CLI as the transport for a Claude subscription (§三十一). The CLI owns
+    // the account: this row stores no token and the adapter reads and injects none, so the request
+    // path is Anthropic's own harness rather than a replayed Claude Code identity against the
+    // Messages API. `baseUrl` is the destination the subscription's traffic reaches; OpenCodex
+    // never sends it. Fails closed if the row's base URL is overridden.
+    // v1 runs tools-disabled (`--tools ""`, no `--mcp-config`) so the client keeps tool ownership:
+    // text/reasoning only until the shared capture-only tool bridge lands. Requires the CLI:
+    // `npm i -g @anthropic-ai/claude-code`, plus a signed-in session (`claude` -> /login).
+    // GOVERNANCE: whether a subscription login may be driven through a proxy for a third-party
+    // agent is Anthropic's call rather than OpenCodex's — flagged for maintainer review, as with
+    // the CodeBuddy rows above.
+    id: "claude-cli",
+    label: "Claude Code CLI (subscription)",
+    adapter: "claude-cli",
+    baseUrl: "https://api.anthropic.com",
+    authKind: "local",
+    // Offered as a dashboard preset without claiming `featured` placement (the same seam cursor
+    // uses): `deriveProviderPresets` otherwise only lists featured and key rows, which would make
+    // a keyless CLI provider unreachable from the Providers page.
+    dashboardPreset: true,
+    defaultModel: "claude-sonnet-5",
+    models: [...ANTHROPIC_MODELS],
+    modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
+    modelInputModalities: { ...ANTHROPIC_MODEL_INPUT_MODALITIES },
+    reasoningEfforts: ANTHROPIC_REASONING_EFFORTS,
+    modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
+    defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,
+    note: "Runs your own Claude subscription through Anthropic's official Claude Code CLI (`claude -p`). OpenCodex stores no Claude token and reads none: the CLI signs in and bills the account itself, so this row needs no API key. Requires the CLI (`npm i -g @anthropic-ai/claude-code`) and a signed-in session (`claude` -> /login). v1 disables CLI tools (--tools \"\", --strict-mcp-config) so the client retains tool ownership: text/reasoning only for now. Subscription routing authorization flagged for maintainer review.",
   },
 ];

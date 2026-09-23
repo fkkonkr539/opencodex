@@ -187,6 +187,7 @@
   "claude-auth-detect.test.ts": "claude-integration",
   "claude-auth-mode.test.ts": "claude-integration",
   "claude-authmode-migration.test.ts": "claude-integration",
+  "claude-cli-adapter.test.ts": "providers",
   "claude-cli.test.ts": "claude-integration",
   "claude-code-thought-signature-scope.test.ts": "claude-integration",
   "claude-compatibility.test.ts": "claude-integration",
