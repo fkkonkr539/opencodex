@@ -953,7 +953,10 @@ CLI headlessly (`claude -p`, `stream-json`) once per turn:
   `--setting-sources ""`. The harness loads no CLAUDE.md, skill, hook, plugin or MCP server from the
   machine and can neither read, write, exec nor browse. No session is persisted between turns.
 - **System prompt:** the caller's system and developer prompts replace the Claude Code preset
-  (`--system-prompt`), so the turn answers the client's contract rather than the harness persona.
+  (`--system-prompt-file`), so the turn answers the client's contract rather than the harness
+  persona. The folded prompt is staged in a private per-turn file (mode `0600`) and passed by path,
+  because process arguments are world-readable through process listing; a request that carries
+  neither a system nor a developer prompt gets an empty file, which replaces the preset with nothing.
 - **Tool ownership:** v1 is text and reasoning only, exactly like the CodeBuddy and Qoder presets:
   with no tool channel, approval, sandboxing and execution stay with the client. The shared
   capture-only tool bridge is the documented follow-up.

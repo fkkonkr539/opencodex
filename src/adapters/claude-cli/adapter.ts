@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterEvent, OcxParsedRequest, OcxProviderConfig } from "../../types";
 import type { AdapterRequest, ProviderAdapter } from "../base";
 import { mapReasoningEffort } from "../../reasoning-effort";
@@ -35,12 +38,20 @@ export const CLAUDE_CLI_QUIET_ENV: Readonly<Record<string, string>> = {
  *
  * The shared base env also drops every inherited `ANTHROPIC_*` variable, which is what keeps a
  * `claude` the operator already points at this proxy from looping back into it.
+ *
+ * `USER` is the one inherited name added back, and it is not a credential: the CLI resolves its own
+ * sign-in by account name, so a scoped env without it makes a signed-in machine answer "not logged
+ * in". Measured with `claude auth status` under `env -i`: `USER` alone reports `loggedIn: true`,
+ * `LOGNAME` alone or neither reports `loggedIn: false`.
  */
 export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     ...baseScopedEnv(),
     ...CLAUDE_CLI_QUIET_ENV,
   };
+  const user = process.env.USER;
+  if (user) env.USER = user;
+  return env;
 }
 
 /**
@@ -52,17 +63,18 @@ export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Reco
  * stops the CLI from loading CLAUDE.md, skills, hooks, plugins and output styles into a proxied
  * turn, which is what makes the request deterministic instead of dependent on the host's setup.
  *
- * `--system-prompt` REPLACES the Claude Code preset rather than appending to it. The caller's
- * system and developer prompts are the contract this turn answers under; leaving the harness preset
- * in place would put a second, contradictory instruction set in front of them and would describe
- * tools this turn deliberately does not have.
+ * The system prompt REPLACES the Claude Code preset rather than appending to it. The caller's system
+ * and developer prompts are the contract this turn answers under; leaving the harness preset in
+ * place would put a second, contradictory instruction set in front of them and would describe tools
+ * this turn deliberately does not have.
  *
- * That flag is therefore always present, including when the caller sends no system or developer
- * prompt at all: omitting it is not "no system prompt", it is "Claude Code's preset", and the
- * replacement for an absent caller prompt is the empty string. Verified against 2.1.270 by reading
- * the `prompt_snapshot` attachment the CLI writes into a session transcript — `--system-prompt
- * "MARKER"` snapshots exactly that text, `--system-prompt ""` snapshots the empty string, and
- * omitting the flag snapshots the fourteen-block harness preset.
+ * It travels as a `--system-prompt-file` path rather than inline, because argv is world-readable
+ * through process listing — the same reason the CodeBuddy adapter stages its folded prompt. The
+ * staging file is passed by `runTurn`, which always writes one: omitting the flag is not "no system
+ * prompt", it is "Claude Code's preset", so a caller that sends neither a system nor a developer
+ * prompt gets an empty file instead. Verified against 2.1.270 by reading the `prompt_snapshot`
+ * attachment the CLI writes into a session transcript — a file holding MARKER snapshots `["MARKER"]`,
+ * an empty file snapshots `[""]`, and an omitted flag snapshots the fourteen-block harness preset.
  *
  * `--no-session-persistence` keeps every turn stateless. The client replays its own conversation
  * and `buildConversationInput` projects it into the single stream-json user frame the CLI accepts.
@@ -70,7 +82,12 @@ export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Reco
  * There is deliberately no `--max-turns` here: the Claude Code CLI exposes no such flag (the Agent
  * SDK sets it on the turn budget instead), and with no tool channel a single `-p` turn cannot loop.
  */
-export function buildArgs(_profile: ClaudeCliProfile, parsed: OcxParsedRequest, provider: OcxProviderConfig): string[] {
+export function buildArgs(
+  _profile: ClaudeCliProfile,
+  parsed: OcxParsedRequest,
+  provider: OcxProviderConfig,
+  systemPromptFile?: string,
+): string[] {
   const args: string[] = [
     "-p",
     "--output-format", "stream-json",
@@ -85,7 +102,7 @@ export function buildArgs(_profile: ClaudeCliProfile, parsed: OcxParsedRequest, 
   ];
   const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
   if (effort) args.push("--effort", effort);
-  args.push("--system-prompt", buildSystemPrompt(parsed) ?? "");
+  if (systemPromptFile) args.push("--system-prompt-file", systemPromptFile);
   return args;
 }
 
@@ -160,16 +177,42 @@ export function createClaudeCliAdapter(provider: OcxProviderConfig, deps: Claude
         });
         return;
       }
-      await runCodingAgentTurn({
-        profiles: CLAUDE_CLI_PROFILES,
-        provider,
-        parsed,
-        incoming,
-        emit: withClaudeLoginHint(emit),
-        buildArgs: (profile, req, prov) => buildArgs(profile as ClaudeCliProfile, req, prov),
-        buildEnv: (profile, apiKey) => buildChildEnv(profile as ClaudeCliProfile, apiKey),
-        deps,
-      });
+      // argv is world-readable via process listing, so the folded system+developer prompt is staged
+      // in a private per-turn file and passed by path. The file is written even when the caller
+      // sends no prompt at all: the flag has to be present either way, and an empty replacement is
+      // what keeps the harness preset out of the turn.
+      let promptDir: string | undefined;
+      let promptFile: string | undefined;
+      try {
+        promptDir = await mkdtemp(join(tmpdir(), "ocx-claude-cli-prompt-"));
+        promptFile = join(promptDir, "system-prompt.txt");
+        await writeFile(promptFile, buildSystemPrompt(parsed) ?? "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+      } catch {
+        if (promptDir) await rm(promptDir, { recursive: true, force: true }).catch(() => {});
+        emit({
+          type: "error",
+          message: "Claude Code system prompt could not be staged securely.",
+          status: 500,
+          errorType: "upstream_error",
+          code: "system_prompt_staging_failed",
+          retryable: false,
+        });
+        return;
+      }
+      try {
+        await runCodingAgentTurn({
+          profiles: CLAUDE_CLI_PROFILES,
+          provider,
+          parsed,
+          incoming,
+          emit: withClaudeLoginHint(emit),
+          buildArgs: (profile, req, prov) => buildArgs(profile as ClaudeCliProfile, req, prov, promptFile),
+          buildEnv: (profile, apiKey) => buildChildEnv(profile as ClaudeCliProfile, apiKey),
+          deps,
+        });
+      } finally {
+        if (promptDir) await rm(promptDir, { recursive: true, force: true }).catch(() => {});
+      }
     },
   };
 }

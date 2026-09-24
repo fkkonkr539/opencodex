@@ -1470,6 +1470,12 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     dashboardUrl: "https://docs.claude.com/en/docs/claude-code/setup",
     defaultModel: "claude-sonnet-5",
     models: [...ANTHROPIC_MODELS],
+    // Static roster, exactly like the CodeBuddy rows. Without this the catalog treats the row as a
+    // live-discovery candidate and requests a model list the CLI route never serves: a real start
+    // logged `Provider model discovery for "claude-cli" failed with HTTP 404` and then fell back to
+    // these ids anyway. `liveModels: false` makes the configured roster authoritative and skips the
+    // request entirely (src/codex/catalog/provider-models.ts).
+    liveModels: false,
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
     // Text-only for v1, not the image modality the Messages API rows publish. The CLI parses an
     // image frame (verified against 2.1.270), but a headless turn has no verified contract that the

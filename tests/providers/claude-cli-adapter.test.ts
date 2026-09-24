@@ -1,14 +1,17 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import type { ChildProcess } from "node:child_process";
 import {
   buildArgs,
   buildChildEnv,
+  CLAUDE_CLI_QUIET_ENV,
   createClaudeCliAdapter,
   withClaudeLoginHint,
   type SpawnFn,
 } from "../../src/adapters/claude-cli/adapter";
+import { baseScopedEnv } from "../../src/adapters/coding-agent/turn";
 import { CLAUDE_CLI_PROFILE, clearClaudeCliBinaryCache } from "../../src/adapters/claude-cli/profiles";
 import { effectiveAdapterContract, getAdapterDefinition } from "../../src/adapters/registry";
 import { PROVIDER_REGISTRY } from "../../src/providers/registry";
@@ -83,6 +86,8 @@ describe("claude-cli is an official-harness provider, not a Messages relay", () 
     expect(entry!.defaultModel).toBe("claude-sonnet-5");
     expect(entry!.models).toContain(entry!.defaultModel!);
     expect(entry!.modelContextWindows?.[entry!.defaultModel!]).toBeGreaterThan(0);
+    // Static roster: a live discovery request against this route answers 404 and is pure noise.
+    expect(entry!.liveModels).toBe(false);
     // The CLI parses an image frame, but no headless turn was shown to hand those bytes to the
     // model, so the row publishes text-only models instead of the Messages API rows' image
     // modality: an advertised input the route cannot honour is how a picture gets answered blind.
@@ -142,17 +147,15 @@ describe("claude-cli headless arguments keep tool ownership with the client", ()
   test("the caller's system prompt REPLACES the harness preset", () => {
     const args = buildArgs(CLAUDE_CLI_PROFILE, parsed({
       context: { systemPrompt: ["Be terse."], messages: [] },
-    }), provider());
-    expect(args[args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
+    }), provider(), "/private/system-prompt.txt");
+    expect(args[args.indexOf("--system-prompt-file") + 1]).toBe("/private/system-prompt.txt");
+    // argv is world-readable through process listing, so the folded prompt is a path, not an argument.
+    expect(args).not.toContain("Be terse.");
+    expect(args).not.toContain("--system-prompt");
   });
 
-  test("a request with no system prompt REPLACES the harness preset with nothing", () => {
-    // Omitting the flag is not "no system prompt": it is Claude Code's own fourteen-block preset,
-    // which describes a harness with tools this turn does not have. The empty replacement is what
-    // the Messages API path produces for the same request. (Verified against 2.1.270 through the
-    // prompt_snapshot attachment the CLI writes into a session transcript.)
-    const args = buildArgs(CLAUDE_CLI_PROFILE, parsed(), provider());
-    expect(args[args.indexOf("--system-prompt") + 1]).toBe("");
+  test("no staged prompt means no flag at all, so runTurn always stages one", () => {
+    expect(buildArgs(CLAUDE_CLI_PROFILE, parsed(), provider())).not.toContain("--system-prompt-file");
   });
 
   test("maps the caller's reasoning effort onto the CLI's --effort", () => {
@@ -203,6 +206,35 @@ describe("claude-cli child environment carries no credential and no proxy destin
     expect(JSON.stringify(env)).not.toContain("sk-ant-row-key");
     expect(Object.keys(env).filter(name => name.startsWith("ANTHROPIC_") || name.startsWith("CLAUDE_CODE_OAUTH"))).toEqual([]);
   });
+
+  test("carries the account name the CLI resolves its keychain sign-in by, and nothing else new", () => {
+    // Without USER the CLI reports "not logged in" on a signed-in machine: it looks its own keychain
+    // entry up by account name. The value is a name, not a credential — no token is added here.
+    const previous = process.env.USER;
+    process.env.USER = "ocx-probe-user";
+    try {
+      const env = buildChildEnv(CLAUDE_CLI_PROFILE, "");
+      expect(env.USER).toBe("ocx-probe-user");
+      // Derived from the two owners rather than restated, so a new quiet flag cannot silently
+      // become the third thing this environment carries.
+      expect(Object.keys(env).sort()).toEqual(
+        [...new Set([...Object.keys(baseScopedEnv()), ...Object.keys(CLAUDE_CLI_QUIET_ENV), "USER"])].sort(),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.USER;
+      else process.env.USER = previous;
+    }
+  });
+
+  test("adds no USER key when the parent has none", () => {
+    const previous = process.env.USER;
+    delete process.env.USER;
+    try {
+      expect("USER" in buildChildEnv(CLAUDE_CLI_PROFILE, "")).toBe(false);
+    } finally {
+      if (previous !== undefined) process.env.USER = previous;
+    }
+  });
 });
 
 describe("claude-cli runTurn fails closed before any spawn", () => {
@@ -238,6 +270,52 @@ describe("claude-cli runTurn fails closed before any spawn", () => {
     expect(spawned).toBe(0);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "error", status: 400, code: "unsupported_input_modality", retryable: false });
+  });
+});
+
+describe("claude-cli stages the folded prompt out of argv", () => {
+  test("keeps the folded prompt out of argv, in a private file that is removed afterwards", async () => {
+    const secret = "private-system-instruction";
+    let promptFile = "";
+    const adapter = createClaudeCliAdapter(provider(), {
+      which: () => "/opt/homebrew/bin/claude",
+      spawn: (_command, args) => {
+        expect(args).not.toContain(secret);
+        const index = args.indexOf("--system-prompt-file");
+        expect(index).toBeGreaterThanOrEqual(0);
+        promptFile = args[index + 1] ?? "";
+        expect(readFileSync(promptFile, "utf8")).toBe(secret);
+        if (process.platform !== "win32") expect(statSync(promptFile).mode & 0o777).toBe(0o600);
+        return fakeChild([enc.encode('{"type":"result","subtype":"success"}\n')]) as unknown as ChildProcess;
+      },
+      killGraceMs: 20,
+    });
+
+    await run(adapter, parsed({ context: { systemPrompt: [secret], messages: [] } }));
+    expect(promptFile).not.toBe("");
+    expect(existsSync(promptFile)).toBe(false);
+  });
+
+  test("a request with no system prompt stages an empty replacement, never the harness preset", async () => {
+    // Omitting the flag is not "no system prompt": it is Claude Code's own fourteen-block preset,
+    // which describes a harness with tools this turn does not have. An empty file is what the CLI
+    // snapshots as an empty system prompt (verified against 2.1.270 through the prompt_snapshot
+    // attachment), and it is the same request the Messages API path forwards with no system message.
+    let promptFile = "";
+    const adapter = createClaudeCliAdapter(provider(), {
+      which: () => "/opt/homebrew/bin/claude",
+      spawn: (_command, args) => {
+        const index = args.indexOf("--system-prompt-file");
+        expect(index).toBeGreaterThanOrEqual(0);
+        promptFile = args[index + 1] ?? "";
+        expect(readFileSync(promptFile, "utf8")).toBe("");
+        return fakeChild([enc.encode('{"type":"result","subtype":"success"}\n')]) as unknown as ChildProcess;
+      },
+      killGraceMs: 20,
+    });
+
+    await run(adapter, parsed());
+    expect(existsSync(promptFile)).toBe(false);
   });
 });
 
