@@ -1471,7 +1471,12 @@ export const PROVIDER_REGISTRY_EXTENDED: readonly ProviderRegistryEntry[] = [
     defaultModel: "claude-sonnet-5",
     models: [...ANTHROPIC_MODELS],
     modelContextWindows: { ...ANTHROPIC_MODEL_CONTEXT_WINDOWS },
-    modelInputModalities: { ...ANTHROPIC_MODEL_INPUT_MODALITIES },
+    // Text-only for v1, not the image modality the Messages API rows publish. The CLI parses an
+    // image frame (verified against 2.1.270), but a headless turn has no verified contract that the
+    // harness hands those bytes to the model, and advertising a modality the route cannot honour
+    // makes a route selection pick this row for a picture it then answers blind. The adapter refuses
+    // direct image input for the same reason; the vision sidecar still captions images into text.
+    noVisionModels: [...ANTHROPIC_MODELS],
     reasoningEfforts: ANTHROPIC_REASONING_EFFORTS,
     modelReasoningEfforts: { ...ANTHROPIC_MODEL_REASONING_EFFORTS },
     defaultMaxOutputTokens: ANTHROPIC_DEFAULT_MAX_OUTPUT_TOKENS,

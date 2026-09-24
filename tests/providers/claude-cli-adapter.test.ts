@@ -83,6 +83,11 @@ describe("claude-cli is an official-harness provider, not a Messages relay", () 
     expect(entry!.defaultModel).toBe("claude-sonnet-5");
     expect(entry!.models).toContain(entry!.defaultModel!);
     expect(entry!.modelContextWindows?.[entry!.defaultModel!]).toBeGreaterThan(0);
+    // The CLI parses an image frame, but no headless turn was shown to hand those bytes to the
+    // model, so the row publishes text-only models instead of the Messages API rows' image
+    // modality: an advertised input the route cannot honour is how a picture gets answered blind.
+    expect(entry!.noVisionModels).toEqual(entry!.models ?? []);
+    expect(entry!.modelInputModalities).toBeUndefined();
   });
 
   test("the row is a keyless key provider, not a local runtime, and needs no dashboardPreset flag", () => {
@@ -141,9 +146,13 @@ describe("claude-cli headless arguments keep tool ownership with the client", ()
     expect(args[args.indexOf("--system-prompt") + 1]).toBe("Be terse.");
   });
 
-  test("no system prompt is passed when the request carries none", () => {
+  test("a request with no system prompt REPLACES the harness preset with nothing", () => {
+    // Omitting the flag is not "no system prompt": it is Claude Code's own fourteen-block preset,
+    // which describes a harness with tools this turn does not have. The empty replacement is what
+    // the Messages API path produces for the same request. (Verified against 2.1.270 through the
+    // prompt_snapshot attachment the CLI writes into a session transcript.)
     const args = buildArgs(CLAUDE_CLI_PROFILE, parsed(), provider());
-    expect(args).not.toContain("--system-prompt");
+    expect(args[args.indexOf("--system-prompt") + 1]).toBe("");
   });
 
   test("maps the caller's reasoning effort onto the CLI's --effort", () => {
@@ -213,6 +222,22 @@ describe("claude-cli runTurn fails closed before any spawn", () => {
     expect(spawned).toBe(0);
     expect(events[0]).toMatchObject({ type: "error", code: "cli_not_found", retryable: false });
     expect(String((events[0] as { message: string }).message)).toContain("npm install -g @anthropic-ai/claude-code");
+  });
+
+  test("an image is refused rather than handed to a harness that was never shown to carry it", async () => {
+    let spawned = 0;
+    const adapter = createClaudeCliAdapter(provider(), {
+      spawn: () => { spawned++; return fakeChild([]) as unknown as ChildProcess; },
+      which: () => "/opt/homebrew/bin/claude",
+    });
+    const events = await run(adapter, parsed({
+      context: { messages: [{ role: "user", content: [{ type: "text", text: "what is this?" }, { type: "image", imageUrl: "data:image/png;base64,iVBORw0KGgo=" }], timestamp: 0 }] },
+    }));
+    // Same refusal the Qoder presets make: a dropped image answers the wrong question confidently,
+    // and no headless Claude Code turn was shown to deliver image bytes to the model.
+    expect(spawned).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "error", status: 400, code: "unsupported_input_modality", retryable: false });
   });
 });
 

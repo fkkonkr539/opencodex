@@ -443,7 +443,7 @@ selectors, then retry. Signing in from a machine with no existing `kiro-cli` ses
 
 ## 3. API-key catalog
 
-opencodex ships 97 built-in presets: 80 key-based, 13 OAuth, three local, and one default
+opencodex ships 98 built-in presets: 81 key-based, 13 OAuth, three local, and one default
 ChatGPT-forward preset. The dashboard's **Add provider** picker opens a key provider's dashboard,
 validates the key, and stores it; validation is provider-specific. Notable entries:
 
@@ -942,6 +942,11 @@ CLI headlessly (`claude -p`, `stream-json`) once per turn:
   OpenCodex runs as, so every request routed through this row — from any client of the proxy —
   spends that one Claude account. There is no per-client account, no pooling and no multiplexing;
   giving several people their own Claude usage needs one proxy user per sign-in.
+- **Input media:** the row publishes its models as text-only for v1. The CLI accepts an image frame
+  on its stream-json input, but no headless turn has been shown to hand those bytes to the model, so
+  an image sent straight to this provider is refused (`unsupported_input_modality`, the same
+  refusal the Qoder presets make) instead of being silently dropped and answered blind. With the
+  vision sidecar on the request path, images are captioned into text before they reach the row.
 - **Isolation:** every turn runs in a scoped child environment with no inherited `ANTHROPIC_*`
   variable (a `claude` already pointed at this proxy therefore cannot loop back into it), telemetry,
   feedback and the auto-updater disabled, and `--tools ""`, `--strict-mcp-config` plus

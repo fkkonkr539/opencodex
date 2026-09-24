@@ -57,6 +57,13 @@ export function buildChildEnv(_profile: ClaudeCliProfile, _apiKey: string): Reco
  * in place would put a second, contradictory instruction set in front of them and would describe
  * tools this turn deliberately does not have.
  *
+ * That flag is therefore always present, including when the caller sends no system or developer
+ * prompt at all: omitting it is not "no system prompt", it is "Claude Code's preset", and the
+ * replacement for an absent caller prompt is the empty string. Verified against 2.1.270 by reading
+ * the `prompt_snapshot` attachment the CLI writes into a session transcript — `--system-prompt
+ * "MARKER"` snapshots exactly that text, `--system-prompt ""` snapshots the empty string, and
+ * omitting the flag snapshots the fourteen-block harness preset.
+ *
  * `--no-session-persistence` keeps every turn stateless. The client replays its own conversation
  * and `buildConversationInput` projects it into the single stream-json user frame the CLI accepts.
  *
@@ -78,9 +85,24 @@ export function buildArgs(_profile: ClaudeCliProfile, parsed: OcxParsedRequest, 
   ];
   const effort = mapReasoningEffort(provider, parsed.modelId, parsed.options.reasoning);
   if (effort) args.push("--effort", effort);
-  const system = buildSystemPrompt(parsed);
-  if (system) args.push("--system-prompt", system);
+  args.push("--system-prompt", buildSystemPrompt(parsed) ?? "");
   return args;
+}
+
+/**
+ * Refuse image input the way the Qoder presets do.
+ *
+ * The CLI parses an image frame in its stream-json input without complaint (verified against
+ * 2.1.270), but nothing verifies that a headless turn hands those bytes to the model, and an image
+ * the harness drops produces a confident answer to the wrong question. v1 therefore publishes
+ * text-only models — `noVisionModels` on the registry row — and refuses a direct image here; an
+ * operator with the vision sidecar on the request path still gets images captioned into text before
+ * they reach this adapter.
+ */
+function hasImageInput(parsed: OcxParsedRequest): boolean {
+  return parsed.context.messages.some(message =>
+    Array.isArray(message.content) && message.content.some(part => part.type === "image"),
+  );
 }
 
 /**
@@ -127,6 +149,17 @@ export function createClaudeCliAdapter(provider: OcxProviderConfig, deps: Claude
     },
 
     async runTurn(parsed, incoming, emit): Promise<void> {
+      if (hasImageInput(parsed)) {
+        emit({
+          type: "error",
+          message: "Claude Code CLI image input is not enabled because the CLI provider route has no verified multimodal contract.",
+          status: 400,
+          errorType: "invalid_request_error",
+          code: "unsupported_input_modality",
+          retryable: false,
+        });
+        return;
+      }
       await runCodingAgentTurn({
         profiles: CLAUDE_CLI_PROFILES,
         provider,
