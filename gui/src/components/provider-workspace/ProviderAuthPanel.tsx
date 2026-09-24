@@ -309,15 +309,16 @@ export default function ProviderAuthPanel({
 
   const showModelFamilies = item.name === "google-antigravity";
 
-  const effectiveAccountFilter = useMemo(() => {
+  const effectiveAccountFilter = useMemo<AccountFilterKey>(() => {
     if (!showModelFamilies && (
       accountFilter === "with_limits_gemini"
       || accountFilter === "with_limits_claude"
       || accountFilter === "gemini_exhausted"
       || accountFilter === "claude_exhausted"
-    ) {
-      handleFilterChange("with_limits");
+    )) {
+      return "with_limits";
     }
+    return accountFilter;
   }, [showModelFamilies, accountFilter]);
 
   const analyzedAccounts = useMemo(() => {
