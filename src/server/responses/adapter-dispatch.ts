@@ -19,7 +19,13 @@ import { clientCancelledResponse, readDisplaySafeErrorText, normalizeUpstreamErr
 import { redactSecretString } from "../../lib/redact";
 import { rewriteUpstreamPolicyRefusal } from "./policy-refusal";
 import { withProviderRequestSlot } from "../../providers/request-pacing";
-import { providerFetch, fetchWithHeaderTimeout, safeHostLabel, type ProviderFetchOptions } from "./fetch-helpers";
+import {
+  providerFetch,
+  fetchWithHeaderTimeout,
+  safeHostLabel,
+  type CodexWsRuntimeIdentity,
+  type ProviderFetchOptions,
+} from "./fetch-helpers";
 import {
   transientRetryPolicyFor,
   rateLimitRetryPolicyFor,
@@ -97,7 +103,7 @@ export interface PacedAdapterDispatchInput {
   stream: boolean;
   request: AdapterRequest;
   dispatchOverride: ProviderFetchOptions["dispatchOverride"];
-  codexWsRuntimeIdentity: Parameters<typeof providerFetch>[1];
+  codexWsRuntimeIdentity: CodexWsRuntimeIdentity;
   estimate: number | undefined;
   fetchResponse: (request: AdapterRequest, ctx: AdapterFetchContext) => Promise<Response>;
   noteAdapterPhysicalSend: (
@@ -354,13 +360,14 @@ export async function prepareAdapterExchange(
    * is invisible to it and a missed bump would replay a request built with a stale key.
    */
 
-  let upstreamResponse: Response;
-  try {
-    if (transportState.activeAdapter.fetchResponse) {
-      transportState.noteRoutedAttemptSend(inputTokenEstimate);
-      // The lease returns at this boundary unless the send's tracked body owns it
-      // (pacedAdapterDispatch); the acquire/release pairing lives in one place.
-      upstreamResponse = await pacedAdapterDispatch({
+    let upstreamResponse: Response;
+    try {
+      if (transportState.activeAdapter.fetchResponse) {
+        transportState.noteRoutedAttemptSend(inputTokenEstimate);
+        const fetchResponse = transportState.activeAdapter.fetchResponse;
+        // The lease returns at this boundary unless the send's tracked body owns it
+        // (pacedAdapterDispatch); the acquire/release pairing lives in one place.
+        upstreamResponse = await pacedAdapterDispatch({
         providerName: route.providerName,
         provider: route.provider,
         modelId: route.modelId,
@@ -372,7 +379,7 @@ export async function prepareAdapterExchange(
         dispatchOverride: oauthDispatch(builtInitialRequest),
         codexWsRuntimeIdentity: options.codexWsRuntimeIdentity,
         estimate: inputTokenEstimate,
-        fetchResponse: transportState.activeAdapter.fetchResponse!,
+        fetchResponse,
         noteAdapterPhysicalSend,
         noteAdapterRecoveryWithheld,
       });
@@ -525,6 +532,7 @@ export async function prepareAdapterExchange(
         try {
           if (transportState.activeAdapter.fetchResponse) {
             transportState.noteRoutedAttemptSend(retryEstimate, recovery);
+            const fetchResponse = transportState.activeAdapter.fetchResponse;
             return await pacedAdapterDispatch({
               providerName: route.providerName,
               provider: route.provider,
@@ -537,7 +545,7 @@ export async function prepareAdapterExchange(
               dispatchOverride: oauthDispatch(retryRequest),
               codexWsRuntimeIdentity: options.codexWsRuntimeIdentity,
               estimate: retryEstimate,
-              fetchResponse: transportState.activeAdapter.fetchResponse!,
+              fetchResponse,
               noteAdapterPhysicalSend,
               noteAdapterRecoveryWithheld,
               onDispatch,

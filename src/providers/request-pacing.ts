@@ -85,6 +85,8 @@ interface ProviderPacer {
  * body cancellation, or a send that never produced a response.
  */
 export interface ProviderRequestSlot {
+  /** Provider identity for operator diagnostics: names the lease holder in deadline warnings. */
+  readonly providerName?: string;
   /**
    * True only when this slot holds a concurrency lease whose release must follow the
    * upstream body lifecycle. Interval-only slots stay inert so response objects keep
@@ -233,6 +235,7 @@ function makeProviderRequestSlot(
   let bodyTracked = false;
   const leased = waiter.providerMaxConcurrent > 0 || waiter.modelMaxConcurrent > 0;
   return {
+    providerName,
     leased,
     get bodyTracked() {
       return bodyTracked;
@@ -467,7 +470,9 @@ export function trackProviderRequestSlotBody(
   }
   const source = response.body;
   let released = false;
-  let consumed = false;
+  // Set when a deadline callback cancelled the source: the truncation must surface as a
+  // stream error on the next pull, never as a clean EOF a relay would treat as success.
+  let expired = false;
   let expiryTimer: unknown;
   let expiryKind: "unconsumed" | "inactive" = "unconsumed";
   const clearExpiryTimer = (): void => {
@@ -487,14 +492,19 @@ export function trackProviderRequestSlotBody(
     expiryTimer = runtime.setTimer(() => {
       expiryTimer = undefined;
       if (released) return;
+      expired = true;
       release();
-      void source.cancel().catch(() => {});
+      // Cancel through the reader when one exists: after the first pull the source is
+      // locked to it, and cancelling a locked stream rejects without releasing the
+      // socket — the exact upstream leak this deadline exists to prevent.
+      void (reader ?? source).cancel().catch(() => {});
+      const who = slot.providerName === undefined ? "" : ` for provider '${slot.providerName}'`;
       console.warn(
         expiryKind === "inactive"
-          ? "[opencodex] requestPacing released a concurrency lease after "
+          ? `[opencodex] requestPacing${who} released a concurrency lease after `
             + REQUEST_PACING_BODY_INACTIVITY_MS
             + "ms of response body inactivity; the body was cancelled."
-          : "[opencodex] requestPacing released a concurrency lease after "
+          : `[opencodex] requestPacing${who} released a concurrency lease after `
             + REQUEST_PACING_UNCONSUMED_BODY_MS
             + "ms because the provider response body was neither read nor cancelled; the body was cancelled.",
       );
@@ -505,12 +515,11 @@ export function trackProviderRequestSlotBody(
   let cancelled = false;
   const tracked = new ReadableStream<Uint8Array>({
     pull: async controller => {
-      consumed = true;
       // A pull proves a consumer is attached, not that it will keep reading: re-arm a
       // longer inactivity deadline instead of disarming. A body read once and then
       // abandoned (a clone-based peek that cancels only its own tee branch) must still
       // return its lease, while a live stream keeps pushing the deadline back per pull.
-      armExpiryTimer(REQUEST_PACING_BODY_INACTIVITY_MS, "inactive");
+      if (!released) armExpiryTimer(REQUEST_PACING_BODY_INACTIVITY_MS, "inactive");
       try {
         // Inside the try: a source another reader already locked makes getReader()
         // throw, and with the deadline disarmed above that failure must release the
@@ -520,6 +529,14 @@ export function trackProviderRequestSlotBody(
         // A consumer cancel while this read was pending resolves it (done or a late chunk);
         // touching the cancelled controller would throw from the pull algorithm.
         if (cancelled) return;
+        if (expired) {
+          // The deadline cancelled the source mid-stream; report the truncation as an
+          // error instead of letting the cancelled read's done flag close the stream.
+          controller.error(new Error(
+            "[opencodex] requestPacing cancelled the response body after its lease deadline",
+          ));
+          return;
+        }
         if (done) {
           controller.close();
           release();
@@ -534,7 +551,6 @@ export function trackProviderRequestSlotBody(
     },
     cancel: reason => {
       cancelled = true;
-      consumed = true;
       clearExpiryTimer();
       release();
       return (reader ?? source).cancel(reason);
@@ -616,8 +632,10 @@ export function providerRequestPacingStatus(
     if (Number.isFinite(earliestQueuedSlotAt)) nextSlotAt = earliestQueuedSlotAt;
   }
   const providerConcurrencyCap = requestPacingMaxConcurrentRequests(provider);
-  const anyConcurrencyCap = providerConcurrencyCap > 0
-    || Object.values(provider.requestPacing?.models ?? {}).some(rule => normalizedMaxConcurrent(rule) > 0);
+  // Gate on enabled so the status surface agrees with enforcement: a disabled requestPacing
+  // block must not report in-flight leases alongside enabled: false.
+  const anyConcurrencyCap = provider.requestPacing?.enabled === true && (providerConcurrencyCap > 0
+    || Object.values(provider.requestPacing?.models ?? {}).some(rule => normalizedMaxConcurrent(rule) > 0));
   return {
     provider: providerName,
     enabled: provider.requestPacing?.enabled === true,

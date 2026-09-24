@@ -335,7 +335,7 @@ export function providerFetch(
         // inert slots, and a future path change that hands a real lease in here must not
         // strand it — there is no body lifecycle on this leg to return it.
         async () => {
-          const slot = await waitForPacing(init.signal ?? undefined);
+          const slot = await waitForPacing(init?.signal ?? undefined);
           slot?.release();
         });
     }
@@ -352,6 +352,15 @@ export function providerFetch(
   const waitForPacing = (signal?: AbortSignal) => {
     if (pacingSlotAcquired) {
       pacingSlotAcquired = false;
+      // The legacy flag-only pattern (pacingSlotAcquired without a slot) must not
+      // silently bypass a configured cap: the same loud refusal as the missing
+      // providerName case below keeps a future call site from dropping enforcement
+      // by splitting the two options.
+      if (!options.pacingSlot && requestPacingMaxConcurrentRequests(provider, options.modelId) > 0) {
+        return Promise.reject(new Error(
+          "providerFetch requires pacingSlot to enforce requestPacing.maxConcurrentRequests",
+        ));
+      }
       return Promise.resolve(options.pacingSlot);
     }
     if (!options.providerName) {
@@ -366,10 +375,10 @@ export function providerFetch(
       return Promise.resolve(undefined);
     }
     return waitForProviderRequestSlot(
-        options.providerName,
-        provider,
-        options.modelId,
-        signal,
+      options.providerName,
+      provider,
+      options.modelId,
+      signal,
       turnLeaseHeld() ? { concurrency: false } : undefined,
     );
   };
@@ -388,6 +397,10 @@ export function providerFetch(
   markEgressTransparentExecutor(paceAware as unknown as typeof globalThis.fetch);
   return paceAware;
 }
+
+/** Named alias for providerFetch's runtime-identity parameter, so call sites depend on
+ * the concept rather than on the function's positional signature. */
+export type CodexWsRuntimeIdentity = Parameters<typeof providerFetch>[1];
 
 
 

@@ -23,7 +23,9 @@ export function createAdapterPhysicalSend(ctx: AdapterFetchContext = {}, fallbac
      * response body. A budget refusal precedes it, so a refused replay can still
      * return the parked response intact. */
     beforeAdmission?: () => void | Promise<void>;
-    /** Runs only after admission, e.g. backoff and cancellation of a superseded response. */
+    /** Runs only after admission, e.g. backoff and credential refresh. Cancelling a
+     * superseded response belongs in beforeAdmission: behind waitForPacing it queues
+     * behind the very lease it would release (a concurrency cap of one self-deadlocks). */
     beforeDispatch?: () => void | Promise<void>;
     dispatch: (executor: typeof globalThis.fetch) => Promise<Response>;
   }): Promise<Response> => {

@@ -7,7 +7,7 @@ import type { OcxProviderConfig, OcxParsedRequest } from "../types";
 import { createOpenAIChatAdapter } from "./openai-chat";
 import type { ProviderAdapter, AdapterRequest, IncomingMeta } from "./base";
 import { createAdapterPhysicalSend } from "./physical-send";
-import { SendBudgetExhaustedError } from "../lib/upstream-retry";
+import { SendBudgetExhaustedError, cancelResponseBodyBestEffort } from "../lib/upstream-retry";
 
 const BOOTSTRAP_URL = "https://api.xiaomimimo.com/api/free-ai/bootstrap";
 export const MIMO_CHAT_URL = "https://api.xiaomimimo.com/api/free-ai/openai/chat";
@@ -289,9 +289,7 @@ export function createMimoFreeAdapter(provider: OcxProviderConfig): ProviderAdap
             // tracked body holds a lease this replay would queue behind. The budget
             // refusal fires before this hook, so a refused replay still returns the
             // original response with its body intact.
-            beforeAdmission: () => {
-              try { void response.body?.cancel().catch(() => {}); } catch { /* already consumed */ }
-            },
+            beforeAdmission: () => { cancelResponseBodyBestEffort(response); },
             beforeDispatch: async () => {
               // Refresh the JWT only after admission: getMimoJwt issues its own network
               // call and may throw, and a failure there must not strand the freshly

@@ -198,6 +198,7 @@ export function createAdapterContinuations(
       try {
         if (transportState.activeAdapter.fetchResponse) {
           transportState.noteRoutedAttemptSend(continuationEstimate, replayKind);
+          const fetchResponse = transportState.activeAdapter.fetchResponse;
           // A continuation that fails before its executor dispatches still returns its
           // lease at this boundary (pacedAdapterDispatch); a dispatched send's tracked
           // body keeps its own release.
@@ -213,7 +214,7 @@ export function createAdapterContinuations(
             dispatchOverride: oauthDispatch(builtContinuationRequest, nextParsed),
             codexWsRuntimeIdentity: options.codexWsRuntimeIdentity,
             estimate: continuationEstimate,
-            fetchResponse: transportState.activeAdapter.fetchResponse!,
+            fetchResponse,
             noteAdapterPhysicalSend,
             noteAdapterRecoveryWithheld,
           });

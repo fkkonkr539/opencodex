@@ -14,7 +14,7 @@ import { identifyRoutedModel } from "./identity";
 import { buildNonOpenAIToolCatalogNudgeForTools } from "./tool-catalog-nudge";
 import { parseDataUrl } from "./image";
 import { createAdapterPhysicalSend } from "./physical-send";
-import { SendBudgetExhaustedError } from "../lib/upstream-retry";
+import { SendBudgetExhaustedError, cancelResponseBodyBestEffort } from "../lib/upstream-retry";
 import { CommandCodeToolTextFilter, type CommandCodeDeclaredTools } from "./command-code-tool-text";
 
 function declaredTools(tools: OcxTool[]): CommandCodeDeclaredTools {
@@ -677,7 +677,7 @@ export function createCommandCodeAdapter(provider: OcxProviderConfig): ProviderA
         return await send({ url: retry.url, sendClass: "repair", recovery: "reasoning-effort-downgrade",
           // Cancel the superseded response before the pacing wait: under a concurrency
           // cap its tracked body holds a lease the replay would queue behind.
-          beforeAdmission: () => { try { void response.body?.cancel().catch(() => {}); } catch { /* already closed */ } },
+          beforeAdmission: () => { cancelResponseBodyBestEffort(response); },
           dispatch: physical => fetchCommandCode(retry, ctx, physical) });
       } catch (error) {
         if (error instanceof SendBudgetExhaustedError) return response;

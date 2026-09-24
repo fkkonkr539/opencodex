@@ -35,6 +35,7 @@ import {
 } from "../../oauth/generic-account-failover";
 import { stampOAuthAccountLabel, usesApiKeyAccount } from "../../providers/label";
 import {
+  type ProviderRequestSlot,
   releaseProviderRequestSlot,
   waitForProviderRequestSlot,
 } from "../../providers/request-pacing";
@@ -389,28 +390,32 @@ export async function prepareResponsesTransport(
       // keeps a configured cap from being bypassed by an unpaced, uncounted first send.
       // An admission refusal (RequestPacingQueueOverloadError) escapes to the turn's
       // callers, which map it to the same retryable-429 contract as a send-time refusal.
-      const attemptSlot = attempt === 0
-        ? incoming.pacingSlot ?? await waitForProviderRequestSlot(
-          route.providerName, route.provider, route.modelId, incoming.abortSignal,
-        )
-        : await waitForProviderRequestSlot(
-          route.providerName, route.provider, route.modelId, incoming.abortSignal,
-        );
-      const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
-        providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
-        pacingSlot: attemptSlot,
-        turnScopedPacing: true,
-        beforeDispatch: () => {
-          if (sent) return;
-          if (!selectionIsCurrent(binding)) {
-            refused = true;
-            throw new Error("Account selection changed before the first turn dispatch");
-          }
-          commitKeyAttemptSend();
-          sent = true;
-        },
-      });
+      let attemptSlot: ProviderRequestSlot | undefined;
       try {
+        // The acquire sits inside the try: the providerFetch construction below runs after
+        // it, and any throwing step between acquire and dispatch must land in this finally
+        // rather than stranding the just-acquired lease.
+        attemptSlot = attempt === 0
+          ? incoming.pacingSlot ?? await waitForProviderRequestSlot(
+            route.providerName, route.provider, route.modelId, incoming.abortSignal,
+          )
+          : await waitForProviderRequestSlot(
+            route.providerName, route.provider, route.modelId, incoming.abortSignal,
+          );
+        const fetch = providerFetch(route.provider, options.codexWsRuntimeIdentity, {
+          providerName: route.providerName, modelId: route.modelId, pacingSlotAcquired: true,
+          pacingSlot: attemptSlot,
+          turnScopedPacing: true,
+          beforeDispatch: () => {
+            if (sent) return;
+            if (!selectionIsCurrent(binding)) {
+              refused = true;
+              throw new Error("Account selection changed before the first turn dispatch");
+            }
+            commitKeyAttemptSend();
+            sent = true;
+          },
+        });
         await run(requestParsed, { ...incoming, pacingSlot: attemptSlot, providerFetch: fetch }, event => { if (!refused) emit(event); });
       } catch (error) {
         if (!refused) throw error;

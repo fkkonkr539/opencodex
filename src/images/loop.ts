@@ -468,7 +468,14 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
     // expose buildRequest/fetchResponse/parseStream to the bridge, so collect their events through
     // an AdapterEventQueue and pass the bounded collection directly to the common scanner.
     if (adapter.runTurn) {
-      pacingSlot = await deps.waitForRequestSlot?.(signal);
+      try {
+        pacingSlot = await deps.waitForRequestSlot?.(signal);
+      } catch (error) {
+        // Same contract as the collectionError remap below: an admission refusal is a
+        // retryable 429, not a permanent-looking 502. Aborts still propagate raw.
+        if (error instanceof RequestPacingQueueOverloadError) throw new LoopError(429, error.message);
+        throw error;
+      }
       try {
         const queue = createAdapterEventQueue({
           onBacklogExceeded: () => internalAbort.abort("runTurn backlog exceeded"),
@@ -588,7 +595,14 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
       // cannot leave a second release path firing on an already-released slot.
       releaseProviderRequestSlot(pacingSlot);
       pacingSlot = undefined;
-      pacingSlot = await deps.waitForRequestSlot?.(signal);
+      try {
+        pacingSlot = await deps.waitForRequestSlot?.(signal);
+      } catch (error) {
+        // An admission refusal is retryable locally; flattening it to the generic 502
+        // below would break the retryable-429 contract the runTurn remap keeps.
+        if (error instanceof RequestPacingQueueOverloadError) throw new LoopError(429, error.message);
+        throw error;
+      }
       headerDeadline = clearableDeadline(connectTimeoutMs, signal);
     };
     try {
@@ -656,7 +670,7 @@ export async function runWithImageBridge(deps: ImageBridgeDeps): Promise<Respons
             );
           }
         } catch (error) {
-          pacingSlot?.release();
+          releaseProviderRequestSlot(pacingSlot);
           pacingSlot = undefined;
           throw error;
         } finally {
