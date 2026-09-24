@@ -34,12 +34,12 @@ Some adapters share another adapter's routed-tool semantics while retaining inde
   protocol this repository already parses for CodeBuddy and Qoder, so the wire is inherited and the
   family module (`src/adapters/claude-cli/`) supplies only its own arguments and child environment.
   That profile is the first credentialless one: it omits `tokenEnv`, the CLI reads the operator's
-  own Claude Code sign-in, and the turn neither requires nor injects an API key. Everything that
-  makes the turn safe to run under a proxy is argument-level, and `tests/providers/claude-cli-adapter.test.ts`
-  pins it: `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, `--no-session-persistence`,
-  no permission bypass, a folded prompt staged in a 0600 per-turn file and passed as
-  `--system-prompt-file` rather than as a world-readable argument, and a child environment that
-  carries no inherited `ANTHROPIC_*` value.
+  own Claude Code sign-in, and the turn neither requires nor injects an API key. The proxy-safety
+  controls are set per invocation, through CLI arguments and the child environment, and
+  `tests/providers/claude-cli-adapter.test.ts` pins them: `--tools ""`, `--strict-mcp-config`,
+  `--setting-sources ""`, `--no-session-persistence`, no permission bypass, a folded prompt staged
+  in a 0600 per-turn file and passed as `--system-prompt-file` rather than as a world-readable
+  argument, and a child environment that carries no inherited `ANTHROPIC_*` value.
   Its registry row is `authKind: "key"` with `keyOptional: true`, NOT `local`: the turn leaves the
   machine for `api.anthropic.com`, and `local` (Ollama, vLLM, LM Studio) is the classification for
   traffic that never does. `keyOptional` is the existing exemption from key enforcement, and key
